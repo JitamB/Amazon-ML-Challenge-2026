@@ -1,0 +1,55 @@
+# Full-data configuration (run on the AWS box). All paths are relative to the
+# project root (the folder that contains dataset/ and utils/).
+run_name: v1_gbdt
+
+paths:
+  data_dir: dataset            # contains train/ and test/
+  work_dir: work               # caches, features, models, run artefacts
+  output_dir: output           # submission files (matching_results.tsv, candidate_pairs.tsv)
+  validator: utils/validate_submission.py
+
+data:
+  train_s1_frac: 0.4           # fraction of train S1 used (hash-sampled); S2/S3 always kept in full.
+                               # 0.4 keeps train features ~10 GB in RAM on the 64 GB g5.4xlarge
+
+blocking:
+  key_types: [name_tok, name_compact, name_prefix, phon_tok, phon_compact, hn_addr_tok, addr_bigram,
+              name_pair, phon_pair, name_hn]
+  max_df_s1: 30                # drop keys shared by more S1 records than this (per country)
+  max_df_s23: 400              # drop keys shared by more S2/S3 records than this
+  top_n: 80                    # candidates kept per S1 after blocking-score ranking
+  s1_chunk: 200000             # S1 rows joined at a time (memory knob)
+
+features:
+  n_jobs: -1                   # worker processes (-1 = all cores) for prepare, blocking keys, features
+  chunk_size: 250000
+  part_rows: 10000000           # pairs per features part file (bounds peak memory)
+
+model:
+  n_folds: 3                   # folds are by S1 (hash); every train pair gets an out-of-fold score
+  max_train_s1_per_fold: 400000
+  num_boost_round: 3000
+  early_stopping_rounds: 100
+  params:
+    objective: binary
+    learning_rate: 0.05
+    num_leaves: 255
+    min_data_in_leaf: 100
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 1.0
+    num_threads: 0             # 0 = all cores
+    verbose: -1
+
+postprocess:
+  p_min: 0.02                  # ignore candidates below this before assignment
+  best_s1: true                # each S2/S3 record goes to at most one S1 (property of the data)
+  cap_s2: 5
+  cap_s3: 6
+  mode: tune                   # tune | threshold | expected_f
+  threshold: 0.5               # used when mode=threshold (overwritten by tuning)
+  single_threshold: 0.5        # predict empty set if max p is below this
+
+eval:
+  test_country_mix: {India: 0.468, US: 0.383, France: 0.150}

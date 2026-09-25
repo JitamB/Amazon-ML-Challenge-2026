@@ -1,0 +1,6 @@
+# v3 = v2 blocking + number-difference features + second-stage (stacking) model.
+base: v2.yaml
+run_name: v3_stage2
+
+model:
+  stage2: true

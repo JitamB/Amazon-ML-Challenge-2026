@@ -1,0 +1,17 @@
+# v2: number keys use the first 3 address numbers (not only the first) and add
+# phonetic-name + number keys for transliterated Indic names.
+base: base.yaml
+run_name: v2_numkeys
+
+data:
+  train_s1_frac: 0.7
+
+blocking:
+  key_types: [name_tok, name_compact, name_prefix, phon_tok, phon_compact, addr_bigram,
+              name_pair, phon_pair, num_addr_tok, num_name_tok, num_phon_tok]
+
+# faster iterations for the 3-day window (~half the training time of v1)
+model:
+  n_folds: 2
+  params:
+    learning_rate: 0.1

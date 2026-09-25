@@ -1,0 +1,10 @@
+# Tested with Python 3.11
+pandas==2.1.4
+numpy==1.26.4
+pyarrow==23.0.0
+scipy==1.17.1
+rapidfuzz==3.9.0
+lightgbm==4.6.0
+PyYAML==6.0.3
+Unidecode==1.2.0
+indic_transliteration==2.3.82

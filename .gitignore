@@ -1,0 +1,39 @@
+# --- Data: never committed (large, and the competition data is not ours to redistribute).
+# Keep only the folder skeleton and its README; see dataset/README.md for where to get the files.
+dataset/**
+!dataset/README.md
+!dataset/train/
+!dataset/test/
+!dataset/train/.gitkeep
+!dataset/test/.gitkeep
+
+# --- Pipeline artefacts (caches, features, models, logs) and submission files
+work/
+output/
+submissions/
+remote_results/
+
+# --- Safety net: data/model files anywhere else
+*.tsv
+*.parquet
+*.zip
+*.pkl
+*.joblib
+*.bin
+*.safetensors
+*.pt
+
+# --- Local environment and private settings
+.venv/
+venv/
+scripts/remote.env
+.env
+
+# --- Python / editor / OS noise
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store

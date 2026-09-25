@@ -1,0 +1,2 @@
+# Python >= 3.11. Single source of truth is the package's own pinned list:
+-r code/business_entity_resolution/requirements.txt
