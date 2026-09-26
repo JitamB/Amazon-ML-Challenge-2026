@@ -1,0 +1,12 @@
+# v7 = v6 + French address cleanup (region / department words, "ndeg") + flexible candidate
+#      sets: up to 12 per S1, but pairs with ranker score < 0.001 are dropped (at least 1 kept).
+#      On v5b this halved candidates per S1 (11.9 -> 5.6) for -0.017 pts of blocking recall.
+base: v6.yaml
+run_name: v7_fr_flex
+
+data:
+  cache_tag: _translit_addr_guard_fr
+
+candidates:
+  min_cscore: 0.001
+  min_k: 1

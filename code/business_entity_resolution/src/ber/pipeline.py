@@ -20,9 +20,9 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from . import blocking, features, metrics, model, postprocess, stage2
+from . import blocking, candidates, features, metrics, model, postprocess, stage2
 from .io import read_ground_truth, read_source, write_id_lists
-from .normalize import prepare as prepare_frame
+from .normalize import apply_addr_map, apply_translit, learn_addr_map, learn_translit, prepare as prepare_frame
 from .smoke import make_smoke
 
 SPLITS = ("train", "test")
@@ -33,7 +33,8 @@ class Pipeline:
         self.cfg = cfg
         p = cfg["paths"]
         self.data_dir = p["data_dir"]
-        self.cache_dir = os.path.join(p["work_dir"], "cache", os.path.basename(self.data_dir.rstrip("/")))
+        self.cache_dir = os.path.join(p["work_dir"], "cache", os.path.basename(self.data_dir.rstrip("/"))
+                                      + cfg["data"].get("cache_tag", ""))
         self.run_dir = os.path.join(p["work_dir"], "runs", cfg["run_name"])
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.run_dir, exist_ok=True)
@@ -96,9 +97,6 @@ class Pipeline:
             s1p = self._prepare_parallel(s1, 1)
             s23p = pd.concat([self._prepare_parallel(read_source(src("source2")), 2),
                               self._prepare_parallel(read_source(src("source3")), 3)], ignore_index=True)
-            s1p.to_parquet(self.cache(f"{split}_s1.parquet"))
-            s23p.to_parquet(self.cache(f"{split}_s23.parquet"))
-            self.log(f"prepare {split}: S1 {len(s1p):,}  S2+S3 {len(s23p):,}")
             if split == "train":
                 gt, _ = read_ground_truth(src("ground_truth"))
                 s1_pos = pd.Series(np.arange(len(s1p)), index=s1p["rid"])
@@ -107,6 +105,28 @@ class Pipeline:
                                        "r_idx": r_pos.loc[gt["rid"]].values})
                 gt_idx.to_parquet(self.cache("train_gt.parquet"))
                 self.log(f"  train ground-truth links: {len(gt_idx):,}")
+                if self.cfg["data"].get("learned_translit"):
+                    ind = gt_idx[s23p["name_indic"].values[gt_idx["r_idx"].values]]
+                    translit = learn_translit(s1p["name_raw"].values[ind["s1_idx"].values],
+                                              s23p["name_raw"].values[ind["r_idx"].values])
+                    with open(self.cache("translit.json"), "w") as f:
+                        json.dump(translit, f, ensure_ascii=False, indent=0)
+                    self.log(f"  learned transliteration map: {len(translit):,} words from {len(ind):,} Indic-name links")
+                if self.cfg["data"].get("learned_addr_map"):
+                    amap = learn_addr_map(s1p["addr"].values[gt_idx["s1_idx"].values],
+                                          s23p["addr"].values[gt_idx["r_idx"].values])
+                    with open(self.cache("addr_map.json"), "w") as f:
+                        json.dump(amap, f, ensure_ascii=False, indent=0)
+                    self.log(f"  learned address word map: {len(amap):,} words")
+            if self.cfg["data"].get("learned_translit"):
+                with open(self.cache("translit.json")) as f:
+                    s23p = apply_translit(s23p, json.load(f))
+            if self.cfg["data"].get("learned_addr_map"):
+                with open(self.cache("addr_map.json")) as f:
+                    s23p = apply_addr_map(s23p, json.load(f), s1p)
+            s1p.to_parquet(self.cache(f"{split}_s1.parquet"))
+            s23p.to_parquet(self.cache(f"{split}_s23.parquet"))
+            self.log(f"prepare {split}: S1 {len(s1p):,}  S2+S3 {len(s23p):,}")
 
     def block(self):
         for split in SPLITS:
@@ -116,13 +136,21 @@ class Pipeline:
             pairs = blocking.generate_candidates(s1.iloc[sub], s23, self.cfg, self.log)
             pairs["s1_idx"] = sub[pairs["s1_idx"].values]
             pairs["source"] = s23["source"].values[pairs["r_idx"].values].astype(np.int8)
+            gt = pd.read_parquet(self.cache("train_gt.parquet")) if split == "train" else None
+            if self.cfg.get("candidates", {}).get("enabled"):
+                if split == "train":
+                    self._log_recall(s1, gt, pairs, prefix="loose_")
+                pairs = candidates.prune(pairs, s1, s23, split, self.cfg, self.run_file("ranker"), gt, self.log)
+                self.log(f"  pruned to {len(pairs):,} pairs ({len(pairs) / len(sub):.1f} per S1)")
             if split == "train":
-                gt = pd.read_parquet(self.cache("train_gt.parquet"))
-                country, gt, (pairs_v,) = self.train_eval_view(s1, gt, pairs)
-                rec = metrics.blocking_recall(pairs_v, gt, country)
-                self.log(f"  {json.dumps({k: round(v, 4) for k, v in rec.items()})}")
-                self._update_metrics(rec)
+                self._log_recall(s1, gt, pairs)
             pairs.to_parquet(self.run_file(f"{split}_pairs.parquet"))
+
+    def _log_recall(self, s1, gt, pairs, prefix=""):
+        country, g, (pairs_v,) = self.train_eval_view(s1, gt, pairs)
+        rec = {prefix + k: v for k, v in metrics.blocking_recall(pairs_v, g, country).items()}
+        self.log(f"  {json.dumps({k: round(v, 4) for k, v in rec.items()})}")
+        self._update_metrics(rec)
 
     def features(self):
         """Writes {split}_features/part-*.parquet; parts split on S1 boundaries to bound memory."""
@@ -158,14 +186,14 @@ class Pipeline:
 
     def train(self):
         feats = pd.concat([pd.read_parquet(f) for f in self.feature_parts("train")], ignore_index=True)
-        s1, _ = self.load_prepared("train")
+        s1, s23 = self.load_prepared("train")
         gt = pd.read_parquet(self.cache("train_gt.parquet"))
         self.log(f"train: {len(feats):,} pairs, positive rate {feats['label'].mean():.4f}")
         oof, imp = model.train_cv(feats, self.cfg, self.run_file("models"), self.log)
         imp.to_csv(self.run_file("feature_importance.csv"), header=["gain"])
         if self.cfg["model"].get("stage2"):
             self._update_metrics({"stage1_" + k: v for k, v in self._oof_report(feats, oof, s1, gt).items()})
-            feats = pd.concat([feats, stage2.group_features(feats.assign(p=oof))], axis=1)
+            feats = pd.concat([feats, stage2.group_features(feats.assign(p=oof), s23)], axis=1)
             self.log("  stage 2: training on first-stage out-of-fold scores + competition features")
             oof, imp = model.train_cv(feats, self.cfg, self.run_file("models_s2"), self.log)
             imp.to_csv(self.run_file("feature_importance_s2.csv"), header=["gain"])
@@ -197,15 +225,15 @@ class Pipeline:
         with open(self.run_file("selection.json")) as f:
             params = json.load(f)
         n_folds = self.cfg["model"]["n_folds"]
-        keep = ["s1_idx", "r_idx", "source"] + [c for c in stage2.GROUP_SOURCES if c != "p"]
         d = []
         for path in self.feature_parts("test"):
             feats = pd.read_parquet(path)
+            keep = ["s1_idx", "r_idx", "source"] + [c for c in stage2.GROUP_SOURCES if c in feats.columns]
             d.append(feats[keep].assign(p=model.predict(feats, self.run_file("models"), n_folds)))
         d = pd.concat(d, ignore_index=True)
         if self.cfg["model"].get("stage2"):
             # group features need every part at once (a record's competing S1s span parts)
-            g = stage2.group_features(d)
+            g = stage2.group_features(d, s23)
             p2, start = np.empty(len(d), dtype=np.float32), 0
             for path in self.feature_parts("test"):
                 feats = pd.read_parquet(path)

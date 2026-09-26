@@ -1,0 +1,26 @@
+# v5 = v4 + learned candidate pruning (80 loose -> top 12 per S1) + learned address word map
+#      + head-to-head and mutual-support stage-2 features + all train S1s.
+base: v4.yaml
+run_name: v5_ranker
+
+data:
+  train_s1_frac: 1.0
+  learned_addr_map: true
+  cache_tag: _translit_addr
+
+candidates:
+  enabled: true
+  keep_k: 12                   # candidates per S1 fed to the matching model = candidate_pairs.tsv
+  n_folds: 2
+  max_train_rows: 30000000
+  num_boost_round: 400
+  params:
+    objective: binary
+    learning_rate: 0.1
+    num_leaves: 127
+    min_data_in_leaf: 200
+    feature_fraction: 0.9
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    num_threads: 0
+    verbose: -1

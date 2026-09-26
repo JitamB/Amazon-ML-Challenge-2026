@@ -1,0 +1,7 @@
+# v5b = v5 with every fold trained on all of its S1s (v5 capped folds at 400k S1s, a limit
+# set when there were 76 candidates per S1; at ~12 per S1 the full fold is only ~13M rows).
+base: v5.yaml
+run_name: v5b_fullfold
+
+model:
+  max_train_s1_per_fold: 5000000

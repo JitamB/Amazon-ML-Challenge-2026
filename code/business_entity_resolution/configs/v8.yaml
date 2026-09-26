@@ -1,0 +1,10 @@
+# v8 = v7 trained on a test-like view. The test has 5.75 S2/S3 records per S1, train 4.68:
+# about a fifth of the test's S1s look withheld, so their records are orphans that resemble
+# other S1s (often a same-name S1). Training on all train S1s (v5-v7) never shows the model
+# such orphans, so it matches them on test. Keeping 81% of train S1s (4.68 / 5.75) restores
+# the test's density, for the model and for the validation score.
+base: v7.yaml
+run_name: v8_density
+
+data:
+  train_s1_frac: 0.81

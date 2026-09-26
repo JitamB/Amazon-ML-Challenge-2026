@@ -1,0 +1,10 @@
+# v9 = v8 + dotted legal acronyms collapsed in names ("e.u.r.l." -> "eurl", "l.l.c." -> "llc",
+#      then dropped as legal words) + 3 model folds (each model sees 67% of train, not 50%).
+base: v8.yaml
+run_name: v9_acr_3fold
+
+data:
+  cache_tag: _translit_addr_guard_fr_acr
+
+model:
+  n_folds: 3

@@ -1,0 +1,8 @@
+# v4 = v3 + transliteration dictionary learned from training pairs (Indic-script names).
+# Uses its own prepared-data cache, so earlier runs' caches stay valid.
+base: v3.yaml
+run_name: v4_translit
+
+data:
+  learned_translit: true
+  cache_tag: _translit

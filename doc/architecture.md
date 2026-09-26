@@ -1,7 +1,7 @@
 # Pipeline Architecture: Business Entity Resolution
 
-*Last updated: 2026-09-25, during the first full run (v1).*
-*Why the approach looks like this: `doc/analysis.md`. How to run it: `code/business_entity_resolution/README.md`.*
+*Master document: current design, every version's changes and results, and open problems.*
+*Last updated: 2026-09-26 (v8 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
 
 ---
 
@@ -9,213 +9,240 @@
 
 For every Source 1 (S1) business, return the Source 2 / Source 3 records that are the same business.
 
-- **Score:** F0.5 per S1, averaged over all S1s. A wrong match costs about twice as much as a missed one, and an S1 with no true matches (a *singleton*) scores 1.0 only if we return an empty list.
-- **Approach:** a classic entity-resolution pipeline. Cheap candidate generation first, then an expensive pair classifier, then decisions per S1 that use the known structure of the data.
+- **Score:** F0.5 per S1, averaged over all S1s: F0.5 = 1.25·TP / (P + 0.25·G), with TP the correct matches, P the predicted matches and G the true matches. A wrong match costs about twice as much as a missed one. An S1 with no true matches (a *singleton*, 5.6% of train) scores 1.0 only for an empty list.
+- **Submission:** `matching_results.tsv` (the matches) and `candidate_pairs.tsv` (the candidate set the model scored). The candidate file is part of the final evaluation: **smaller candidate sets per S1 rank higher**, and blocking must scale.
+- **Test mix:** India 46.8%, US 38.3%, **France 15.0% (no French training data at all)**.
 
 ```
- TSV sources ──► 1. PREPARE ──► 2. BLOCK ──► 3. FEATURES ──► 4. TRAIN ──► 5. PREDICT ──► matching_results.tsv
- (S1, S2, S3)    clean text      candidate     ~45 numbers     LightGBM      pick match         candidate_pairs.tsv
-                 transliterate   pairs         per pair        (3 folds)     sets per S1
-                 extract nums    (≤80 / S1)                    + tune rules
+ TSV sources ─► 1 PREPARE ─► 2 BLOCK ─────────────────► 3 FEATURES ─► 4 TRAIN ──────────────► 5 PREDICT ─► matching_results.tsv
+ S1, S2, S3     clean text    inverted-index keys        ~55 numbers   stage 1 LightGBM        best-S1      candidate_pairs.tsv
+                translit.     → ~115 loose cands / S1    per pair      stage 2 LightGBM        caps
+                learned maps  → ranker keeps ~6 / S1                   (competition features)  E[F0.5] sets
 ```
 
-Each stage reads the previous stage's files from disk. Any stage can be re-run on its own after a change, without repeating the earlier ones.
+Each stage reads the previous stage's files from disk, so any stage can be re-run alone (`--stage block|features|train|predict`).
 
 ---
 
-## 2. Code layout
+## 2. Version history
 
-```
-code/business_entity_resolution/
-├── configs/
-│   ├── base.yaml        full-data settings (every tunable number lives here)
-│   ├── smoke.yaml       tiny regional dataset for bug-hunting; inherits base.yaml
-│   └── v2.yaml          next experiment; inherits base.yaml, overrides a few keys
-└── src/
-    ├── run.py           command-line entry point: --config, --stage, --set key=value
-    └── ber/
-        ├── config.py      YAML loading, `base:` inheritance, command-line overrides
-        ├── io.py          read TSVs, write submission files
-        ├── normalize.py   stage 1: text cleaning, transliteration, numbers, phonetics
-        ├── blocking.py    stage 2: candidate generation
-        ├── features.py    stage 3: pair features
-        ├── model.py       stage 4: LightGBM with S1-grouped folds
-        ├── postprocess.py stage 5: best-S1 assignment, caps, match-set selection
-        ├── metrics.py     exact competition metric, blocking recall
-        ├── pipeline.py    runs the stages, caching, validator, experiment log
-        └── smoke.py       builds the small smoke dataset
-scripts/
-├── remote.sh            sync to and run on the SageMaker space from the Mac
-└── diag_blocking.py     explains why true matches miss blocking
-```
+### 2.1 Scoreboard
 
-**Design rules:**
-- Every tunable number is in the YAML config.
-- Each experiment is a new config file or a `--set` override with a new `run_name`, so runs never overwrite each other.
-- To add a blocking key or a feature you change one function; nothing else needs touching.
+| Version | Main change | Blocking recall | Cands / S1 | Validation (test mix) | India / US | Leaderboard (rank) |
+|---|---|---|---|---|---|---|
+| v1 `v1_gbdt` | Baseline: multi-key blocking, ~45 features, 1 LightGBM | 94.6% | 74 | 0.9458 | 0.932 / 0.962 | **0.942** (160/490) |
+| v2 `v2_numkeys` | Number keys use the first 3 numbers; 2 folds, lr 0.1 | 95.7% | ~76 | not finished | | not submitted |
+| v3 `v3_stage2` | Number-difference features + stage-2 stacking model | 95.7% | ~76 | 0.9617 | 0.952 / 0.974 | **0.9578** (251) |
+| v4 `v4_translit` | Transliteration dictionary learned from train links | 96.05% | 76 | 0.9656 | 0.959 / 0.974 | **0.9606** (313) |
+| v5 `v5_ranker` | Learned candidate ranker (top 12), learned address map, support features, 100% of train S1s | 95.47% | 11.9 | 0.9668 | | not submitted |
+| v5b `v5b_fullfold` | v5 with full-size folds | 95.47% | 11.9 | 0.9680 | 0.962 / 0.975 | **0.959** (>650) |
+| v6 `v6_frfix_keys` | Address map made safe for France; name × address-word keys; 120 loose candidates | 97.07% | 12.0 | 0.9762 | 0.971 / 0.983 | **0.963** (702) |
+| v7 `v7_fr_flex` | French address cleanup; flexible candidate sets | | | | | stopped, merged into v8 |
+| v8 `v8_density` | v7 trained on 81% of train S1s (test-like density) | 97.15% | **5.75** (test 6.4) | 0.9758 | 0.970 / 0.983 | *pending* |
+
+*Blocking recall = share of true training links that reach the model (the recall ceiling). Validation = out-of-fold F0.5 re-weighted to the test's India/US mix; France can't be validated.*
+
+### 2.2 What each version changed, and why
+
+**v1: baseline.**
+- Prepare: transliteration of 9 Indic scripts, name/address cleaning, phonetic skeleton, number extraction.
+- Blocking: single-word keys, plus word-pair and name + house-number keys (added after the first attempt found 92.9% recall, because common single words were dropped by the frequency caps). Top 80 per S1.
+- 3-fold LightGBM, lr 0.05, 255 leaves. Trained on 40% of train S1s.
+- Post-processing: best-S1 assignment, per-source caps, tuned threshold or expected-F0.5 selection.
+- Fixes along the way: a website regex that matched the empty string; workers copying the full tables (117 GB RAM), so each worker now gets only its column slices.
+
+**v2: number keys.**
+- Addresses get reordered ("unit 8 2739 cranberry hwy"), so the first number isn't always the house number. Number keys now pair each of the first 3 numbers with address, name and phonetic words.
+- 2 folds and lr 0.1 roughly halved training time. 70% of train S1s.
+
+**v3: decoy features and stacking.** Error analysis on v1 found three sources of loss, roughly half, a quarter and a quarter: blocking misses, model misses, wrong matches (mostly sibling decoys: same name, house number shifted by 1–20).
+- Number-difference features: log house-number difference, substring (true matches drop or insert digits; decoys shift), Levenshtein, cross-containment.
+- **Stage 2:** a second LightGBM on stage-1 out-of-fold scores plus *competition* features: the best competing S1 for the same record, the best competing record for the same S1, rank within each, and head-to-head deltas.
+
+**v4: learned transliteration.**
+- Many Indic names are word-by-word transliterations of the English name ("balaji bisines praivet limited"). From training links with equal word counts we learn transliterated word → English word (686 words), then rewrite Indic-origin names in train and test.
+- India +0.007 on validation.
+
+**v5: learned candidate ranker (new organiser rule: small candidate sets rank higher).**
+- A small LightGBM on 7 cheap features plus blocking context, trained out-of-fold, scores the loose candidates. Only the top 12 per S1 are kept: 72.9 → 11.9 per S1 for −0.01 points of recall.
+- Learned address-word map: record word → S1 word (1,188 words, e.g. `wb` → `west bengal`), from links where exactly one word differs on each side.
+- Stage-2 *support* features: similarity of each candidate to the S1's two strongest other candidates.
+- Switched to 100% of train S1s.
+- **The leaderboard went down** (0.9606 → 0.959). The cause was found in v6 (see below).
+
+**v6: France fix and name × address keys.**
+- **Bug found:** the address map was learned on India/US and applied everywhere. It rewrote **52% of French records** wrongly: `de → des` (791k times), `saint → street` (115k). A rule now applies in a country only if its target word is more frequent than its source word in that country's S1 addresses. French records rewritten: 51.6% → 2.1%.
+- **Blocking gap found:** 71% of blocking misses were common names whose keys were all capped, with no usable number ("mountain trust" + "kniffin street"). New keys pair the first 3 name / phonetic words with up to 12 address words (`nx|`, `px|`). Loose candidates per S1 raised from 80 to 120. Recall 95.47% → 97.07%.
+- Validation +0.008; leaderboard +0.004.
+
+**v7: France cleanup and flexible candidate sets** (stopped before training; everything carried into v8).
+- French S1 addresses end with the region, records with the department ("bordeaux nouvelle aquitaine" vs "bordeaux gironde"). Both are now stripped, along with `ndeg` (n°).
+- **Flexible candidate sets:** instead of a fixed top 12, keep candidates whose ranker score is ≥ 0.001, at least 1 per S1. The ranker is sharply bimodal: true matches have a median score of 0.9975, non-matches 0.00014. The cutoff keeps 99.98% of true matches and drops 74% of non-matches.
+
+**v8: test-like training density.**
+- The test has 5.75 S2/S3 records per S1, train 4.68. Only 58.9% of test records have a strong S1 candidate (ranker score > 0.5), against 69.3% in train. The test has many more records with no real match.
+- Train now uses 81% of S1s (4.68 / 5.75), so the other 19% of S1s' records become unmatched records, as in the test.
+- Result: validation unchanged (0.9758). So the model already rejects such records well, and the hypothesis doesn't explain the leaderboard gap on its own (see section 5).
+- Candidate sets: **5.75 per S1 on train, 6.4 on test**, half of v6.
 
 ---
 
-## 3. The stages
+## 3. The stages (current design, v8)
 
-### Stage 1: Prepare (`normalize.py`)
+### 3.1 Prepare (`normalize.py`)
 
-Turns raw names and addresses into forms that can be compared across sources, scripts and countries. **Nothing depends on the country label.** France has no training data, so every rule must also work for an unseen country.
+Turns raw names and addresses into comparable forms. Rules must work for France, which has no labels.
 
-| Output column | How it is built | Why |
+| Column | How it is built | Why |
 |---|---|---|
-| `name` | Transliterate to Latin → lowercase → strip website parts (`www.`, `.com`, `#`) → fix typo swaps inside words (`h0ldings`→`holdings`, `8ittinger`→`bittinger`) → drop legal words and filler (`pvt`, `ltd`, `llc`, `sarl`, `shri`, `services`, `the` …) | Removes the noise the data generator adds |
-| `name_compact` | Name words joined with no spaces | Matches website/hashtag names: `sweetpilates.com` ↔ `Sweet Pilates` |
-| `phon` | Sound-alike skeleton of each word: drop vowels and `h`, merge similar consonants (b/p, d/t, g/k, j/z/s, v/w …) | Links transliterations and typos: Tamil/Kannada/Hindi "business" and English "business" all become `psns` |
-| `addr` | Transliterate → lowercase → expand abbreviations (US `st`/`rd`/`ave`…, French `r`/`av`/`bd`/`ch`, `zi`/`cc`/`ld`) → drop `null`/`n/a` | Address abbreviations and reordering |
+| `name` | Transliterate to Latin → lowercase → strip web parts (`www.`, `.com`) → fix digit-for-letter typos inside words (`h0ldings`) → drop legal and filler words (`pvt`, `ltd`, `llc`, `sarl`, `sas`, `shri` …) | Removes generator noise |
+| `name_compact` | Name words joined without spaces | Website and hashtag names |
+| `phon` | Consonant skeleton: vowels and `h` dropped, voiced/unvoiced consonants merged | Transliterations and typos: "praivet" ≈ "private" |
+| `addr` | Transliterate → expand abbreviations (US, India, France) → drop filler (`null`, `n/a`, `ndeg`) → drop French region / department names | Abbreviations, reordering, French area names |
 | `addr_alpha` | Address words of 3+ letters | Blocking keys |
-| `nums`, `hn` | Distinct numbers in the address (leading zeros removed), and the first number | Catching sibling decoys that differ only in unit number |
-| flags | `name_indic`, `name_web`, `addr_empty` | Let the model treat these hard cases differently |
+| `nums`, `hn` | Distinct address numbers (leading zeros removed); the first number | Sibling-decoy detection |
+| flags | `name_indic`, `name_web`, `addr_empty` | Hard cases the model treats separately |
 
-**Transliteration:**
-- Covers all 9 Indic scripts found in the data: Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada and Malayalam. It uses `indic_transliteration` (MIT license).
-- Fixes for Malayalam special letters, zero-width characters and curly apostrophes.
-- All other characters go through `unidecode`.
+**Learned from training links** (train labels only; applied to train and test S2/S3):
+- `translit.json`: 686 transliterated words → English, applied to Indic-origin names (v4).
+- `addr_map.json`: 1,188 record address words → S1 words, applied per country only where the target word is the more common one in that country's S1 addresses (v5, guarded in v6).
 
-**Output:** `work/cache/dataset/{train,test}_{s1,s23}.parquet` and `train_gt.parquet`. This stage runs once and is reused by every experiment. Delete the cache after changing `normalize.py`.
+Output: `work/cache/dataset<cache_tag>/`. Changing `normalize.py` needs a new `data.cache_tag`.
 
-### Stage 2: Block (`blocking.py`)
+### 3.2 Block (`blocking.py` + `candidates.py`)
 
-We can't compare 1.7M × 10M record pairs. Blocking finds a small candidate set per S1 that still contains nearly all true matches.
+**Step 1: inverted-index lookup** (`blocking.py`).
+1. Every record emits hashed keys, each prefixed with the country: records are only compared within a country, since no training match crosses countries.
+2. Keys shared by more than 30 S1s or more than 400 S2/S3 records (per country) are dropped.
+3. Pair score = Σ over shared keys of 1 / log2(2 + key frequency). The top 120 per S1 are kept (~115 on average).
 
-**How it works:**
-1. Every record emits a set of **keys**. Every key is prefixed with the country, so records are only ever compared within the same country. In training data, no match ever crosses countries.
-2. **Keys that are too common are dropped:** more than 30 S1 records, or more than 400 S2/S3 records, per country.
-3. An S1 and an S2/S3 record become a candidate pair if they share any surviving key.
-4. **Pair score** = sum over the shared keys of `1 / log2(2 + key frequency)`, so rare shared keys count more.
-5. **Keep the top 80 candidates per S1.** This set is `candidate_pairs.tsv`.
+| Key | Example | Catches | Since |
+|---|---|---|---|
+| `name_tok`, `name_compact`, `name_prefix` | `nt|balaji`, `nc|sweetpilates` | Name overlap, website names | v1 |
+| `phon_tok`, `phon_compact` | `pt|psns` | Transliterations, typos | v1 |
+| `addr_bigram` | `ab|cranberry|highway` | Addresses without numbers | v1 |
+| `name_pair`, `phon_pair` | `n2|cargo|elite` | Common words that are rare in combination | v1 |
+| `num_addr_tok`, `num_name_tok`, `num_phon_tok` | `na|2739|cranberry` | Any of the first 3 numbers + a word | v2 |
+| `name_addr`, `phon_addr` | `nx|mountain|kniffin` | Common names at addresses without usable numbers | v6 |
 
-**Key types** (configurable via `blocking.key_types`):
+**Step 2: learned pruning** (`candidates.py`, since v5).
+- A LightGBM ranker on cheap features: name token-set, compact-name Jaro-Winkler, phonetic token-set, address token-set, number Jaccard and containment, house-number equality, plus blocking context.
+- Trained with 2 folds by S1, so train pairs get out-of-fold scores, and pruning on train behaves like pruning on test. Test uses the average of the 2 fold models.
+- Keeps up to `keep_k` = 12 per S1, dropping pairs scoring below `min_cscore` = 0.001 but always keeping at least `min_k` = 1.
+- The ranker score is also passed on as a feature (`cscore`).
+- **The kept set is what `candidate_pairs.tsv` reports.**
 
-| Key | Example | Catches |
-|---|---|---|
-| `name_tok` | `nt|balaji` | Plain name overlap |
-| `name_compact`, `name_prefix` | `nc|sweetpilates`, `np|federal` | Websites, hashtags, spacing differences |
-| `phon_tok`, `phon_compact` | `pt|psns` | Transliterations, typos |
-| `hn_addr_tok` | `ha|2739|cranberry` | Alias names at the same address |
-| `addr_bigram` | `ab|cranberry|highway` | Addresses with no number |
-| `name_pair`, `phon_pair` *(added after run 1)* | `n2|cargo|elite` | **Common words that are rare in combination.** Single words like "elite" or "balaji" were being dropped as too frequent |
-| `name_hn` *(added after run 1)* | `nh|2739|cardiology` | Name + house number |
-| `num_addr_tok`, `num_name_tok`, `num_phon_tok` *(v2)* | `na|2739|cranberry` | Same as the number keys above, but using the first 3 numbers. Address parts get reordered, so the first number isn't always the house number |
+### 3.3 Features (`features.py`)
 
-**Blocking recall** (share of true training links that reach the model):
-
-| Version | Recall | US | India | Candidates / S1 |
-|---|---|---|---|---|
-| Single-word keys, top 60 | 92.9% | 95.1% | 89.6% | 54 |
-| + word-pair and name+number keys, top 80 (**current run**) | **94.6%** | 96.5% | 91.6% | 74 |
-| v2 number keys | *pending* | | | |
-
-What still misses, from `scripts/diag_blocking.py`:
-- **80%:** the shared keys are too common. Typically a common name with an empty address, or a transliterated name with a partial address.
-- **17%:** cut by the top-80 limit.
-- **3%:** nothing in common at all, e.g. a random alias name.
-- **By record type:** 29% of misses have Indic-script names and 20% have empty addresses.
-
-### Stage 3: Features (`features.py`)
-
-Computes about 45 numbers for each candidate pair.
-- **String similarity** uses rapidfuzz's C++ element-wise comparison (`cpdist`), which is fast.
-- **Set overlaps** are computed in plain Python.
-- **Parallelism:** the work runs on all cores. Each worker gets only the column slices its chunk needs; sharing the full tables with 32 workers made memory grow past 117 GB on the first attempt.
-- **Output:** parquet files of about 10M pairs each, to bound memory.
+About 55 numbers per pair, computed in parallel with rapidfuzz `cpdist`. Output is written in parquet parts of up to 10M pairs.
 
 | Group | Features |
 |---|---|
-| Name similarity | ratio, token-sort, token-set, partial ratio; Jaro-Winkler and partial ratio on the compact name; sound-alike ratio and token-set; raw-name ratio; word Jaccard, containment both ways, extra/missing word counts; rarity-weighted (IDF) word overlap both ways |
-| Address similarity | ratio, token-set, token-sort, partial ratio; address-word Jaccard and containment |
-| **Numbers (decoy killers)** | Same house number (1/0/unknown), same full number set, number Jaccard, containment both ways, extra/missing number counts |
-| Record flags | Candidate has empty address, Indic name, or website name; comes from S3; word and number counts on both sides |
-| Blocking context | Blocking score; rank and relative score among this S1's candidates; rank and relative score among the S1s competing for this record; number of candidates on each side |
+| Name | ratio, token-sort, token-set, partial; compact Jaro-Winkler and partial; phonetic ratio and token-set; raw ratio; word Jaccard, containment, extra/missing counts; IDF-weighted overlap both ways |
+| Address | ratio, token-set, token-sort, partial; word Jaccard and containment |
+| Numbers | house number equal; number set equal; Jaccard, containment, extra/missing counts; log difference, substring, Levenshtein, cross-containment, min log difference |
+| Record flags | empty address, Indic name, website name, source 3, word and number counts |
+| Context | blocking score, rank and relative score within the S1 and within the record, candidate counts, ranker score |
 
-In the smoke run, the blocking-context and number features carry the most weight.
+### 3.4 Train (`model.py`, `stage2.py`)
 
-### Stage 4: Train (`model.py`)
+- **Stage 1:** LightGBM binary (lr 0.1, 255 leaves, early stopping), 2 folds by S1 hash. Every train pair gets an out-of-fold probability `p`.
+- **Stage 2:** the same model type on the stage-1 features plus features built from out-of-fold `p`:
+  - *Competition:* the maximum of the other pairs' values for the same record and for the same S1, for `p` and for the key similarities; ranks; counts of confident pairs.
+  - *Head-to-head:* this pair's value minus the best competing S1's value, for the same record.
+  - *Support:* name, address and house-number similarity to the S1's two strongest other candidates.
+- Stage 2 adds about +0.005 (v6: 0.9706 → 0.9762).
+- Largest importances: `p1`, `p_delta_r`, `cscore`, `r_n_high`, `b_n_r`.
 
-- **Model:** LightGBM binary classifier (MIT license, far under the 8B-parameter limit). `num_leaves` 255, learning rate 0.05 (0.1 in v2), early stopping.
-- **Folds are split by S1:** all candidates of one S1 are in the same fold. Every training pair then gets an **out-of-fold** probability from a model that never saw its S1.
-- **Why that matters:** the post-processing rules (stage 5) are tuned on these out-of-fold probabilities, with every S1 competing for every record just as on test. That makes the tuned thresholds trustworthy.
-- **Training subsample:** each fold trains on at most 400k S1s to bound time. Training uses 70% of training S1s (`data.train_s1_frac`), which bounds memory.
-- **Run 1 timing:** each fold trains about 30M rows and grows 1,600–1,900 trees in about 20 minutes on 32 vCPU.
+### 3.5 Predict (`postprocess.py`)
 
-### Stage 5: Predict (`postprocess.py`)
-
-Turns pair probabilities into one match list per S1. The order matters:
-
-1. **Drop** pairs with probability < 0.02.
-2. **Best-S1 assignment:** each S2/S3 record is kept only for the S1 that scores it highest. This is exact, not a heuristic: in 7.6M training links no record ever belongs to two S1s.
-3. **Caps:** at most 5 S2 and 6 S3 records per S1, the maxima seen in training.
-4. **Choose each S1's match set.** Two methods are tried on the out-of-fold predictions and the one with the better score is used:
-   - **Threshold:** keep pairs with p ≥ t. If even the best pair is below a separate singleton threshold, return nothing.
-   - **Expected F0.5:** sort by p and choose the number k to keep (k can be 0) that maximises `1.25 · Σ top-k p / (k + 0.25 · Σ p)`. The k = 0 option scores the probability that there is no match. This follows from F0.5 = 1.25·TP / (P + 0.25·G), where TP = correct matches, P = predicted matches and G = true matches.
-5. **Write the outputs.** Every S1 in test gets a row, with an empty list for singletons. The official `utils/validate_submission.py` then runs automatically.
+1. Drop pairs with p < 0.02.
+2. **Best-S1:** each record goes only to its highest-scoring S1. This is exact: no training record belongs to two S1s.
+3. **Caps:** at most 5 S2 and 6 S3 records per S1 (the training maxima).
+4. **Set selection**, tuned on out-of-fold predictions: either a threshold, or the k per S1 (0 allowed) that maximises expected F0.5. Expected F0.5 has won every run.
+5. Write both TSVs. The official validator then runs, and a copy is kept in `work/runs/<run>/submission/`.
 
 ---
 
-## 4. Measuring progress
+## 4. Measurement and compute
 
-`metrics.py` reproduces the competition metric exactly, including singletons. Each run records these in `work/runs/<run>/metrics.json`:
+**Metrics** (`work/runs/<run>/metrics.json`; one row per run in `work/experiments.csv`):
+- `block_recall` (with a `loose_` version before pruning) and `cands_per_s1`;
+- stage-1 and final out-of-fold F0.5, per country and test-mix weighted;
+- test match counts per country.
 
-| Metric | Meaning |
+**Diagnostics** (`scripts/`):
+
+| Script | Answers |
 |---|---|
-| `block_recall` (+ per country) | Share of true links that reach the model. This is the ceiling for recall |
-| `macro_f05`, `f05_US`, `f05_India` | Out-of-fold score after post-processing |
-| `f05_test_mix` | The same score, re-weighted to the test's country mix (India 46.8%, US 38.3%). **This is the number to compare with the leaderboard** |
-| `oof_f05_p05_no_postprocess` | Score with a plain 0.5 threshold, showing how much post-processing adds |
-| `test_matches`, `test_empty_share` | Sanity checks on the submission |
+| `error_analysis.py <run>` | Score ceilings; loss split (blocking / model miss / wrong match); examples |
+| `diag_blocking.py <run_dir> [n] [extra_keys]` | Why true links miss blocking: capped / cut by top-N / no shared key; what-if for new key types |
+| `compare_runs.py <a> <b>` | Test predictions of two runs, by country |
+| `flex_k.py <run>` | Candidate-set size vs recall for fixed and score-based cuts |
+| `density_check.py`, `density_sim.py` | Records per S1, train vs test; out-of-fold score at other densities |
+| `france_map_check.py`, `france_look.py` | What the address map does to French records; uncertain French predictions |
 
-`work/experiments.csv` gets one row per prediction run. The leaderboard score is added by hand after each upload. The gap between validation and leaderboard mostly measures how well France, the unseen country, is handled.
+**Compute:**
+- SageMaker `ml.g5.8xlarge`: 32 vCPU, 124 GB RAM, A10G (unused so far), 70 GB disk.
+- Code synced from the Mac with `scripts/remote.sh`; runs use `nohup`.
+- Full run (v6): prepare 6 min, block 86 min, features 9 min, train 36 min, predict 14 min, about **2.5 h** in all.
+- Peak RAM about 70 GB.
 
 ---
 
-## 5. Compute setup
+## 5. Open problem: the validation-to-leaderboard gap
 
-```
-  Mac (VS Code + Claude Code)                          SageMaker space  (ml.g5.8xlarge: 32 vCPU, 124 GB, A10G, 70 GB disk)
-  ├─ edit code                                         ~/ml2026/
-  ├─ scripts/remote.sh push     ──── rsync ────►       ├─ code/, utils/, scripts/, doc/
-  ├─ scripts/remote.sh run '…'  ──── ssh ─────►        ├─ dataset/            (2.3 GB, uploaded once)
-  └─ scripts/remote.sh pull     ◄─── rsync ────        ├─ work/cache/         (prepared data, built once)
-                                                       ├─ work/runs/<run>/    (pairs, features, models, metrics, logs)
-          (AWS Toolkit SSM tunnel; one shared           └─ output/             (the two submission TSVs)
-           connection, so no repeated browser logins)
-```
+| Version | Validation | Leaderboard | Gap | Share of train S1s |
+|---|---|---|---|---|
+| v1 | 0.9458 | 0.942 | 0.004 | 40% |
+| v3 | 0.9617 | 0.9578 | 0.004 | 70% |
+| v4 | 0.9656 | 0.9606 | 0.005 | 70% |
+| v5b | 0.9680 | 0.959 | 0.009 | 100% |
+| v6 | 0.9762 | 0.963 | **0.013** | 100% |
 
-- **Remote runs use `nohup`,** so they keep going even if the Mac disconnects.
-- **Python environment:** `~/venv-ber` on the space, from pinned `requirements.txt`.
-- **Run 1 memory (70% training sample):**
-  - blocking about 55 GB peak;
-  - features 40–90 GB;
-  - training about 75 GB.
+Validation covers only India and the US, so its test-mix number assumes France scores like them. If India/US transfer exactly, the implied France score is (leaderboard − 0.468·India − 0.383·US) / 0.15:
 
-**Run 1 time per stage:**
-
-| Stage | Time |
+| Version | Implied France |
 |---|---|
-| Prepare (one-off) | 3.5 min |
-| Block | ~20 min |
-| Features | ~33 min |
-| Train (3 folds) | ~60 min |
-| Tune + predict | *pending* |
+| v1 | 0.914 |
+| v3 | 0.929 |
+| v4 | 0.925 |
+| v5b | 0.902 |
+| v6 | 0.882 |
 
----
+**What has been ruled out or fixed:**
+- The address map breaking French addresses: fixed in v6, yet the implied France score kept falling.
+- Missing unmatched records in training: v8 adds them at the test's rate and validation didn't move.
 
-## 6. Known limits and next steps
+**Remaining suspects:**
+1. **France really is weak**, and our India/US-tuned blocking keys and features generalise worse with each version.
+2. **The learned maps overfit:** `translit.json` and `addr_map.json` are learned from all training links and applied to those same links, so validation sees their in-sample benefit. Test: learn the maps per fold.
+3. **Stage-2 input mismatch:** stage 2 is trained on out-of-fold `p` from single fold models, but test `p` is the average of 2 fold models, which is distributed differently.
 
-| # | Change | Targets | Status |
+**France probe (2026-09-26).** We submitted v8 (0.964459) and v8 with every French S1 emptied (0.831865). Both are scored on the same public subset. With France's weight at about 0.15 and a French singleton share of 5–6%:
+
+| | Leaderboard (derived) | Validation | Gap |
 |---|---|---|---|
-| 1 | Number keys over the first 3 numbers; sound-alike + number keys (v2) | House number taken from the wrong field; Indic partial addresses | Coded, smoke-tested; runs after v1 |
-| 2 | Faster training: 2 folds, learning rate 0.1 (v2) | Iteration speed | In `v2.yaml` |
-| 3 | Transliteration dictionary learned from the aligned training pairs | Indic names: 29% of blocking misses and the weakest country score | Planned |
-| 4 | Features where one S1's candidates support each other | Alias names and empty addresses near confident matches | Planned |
-| 5 | France: check abbreviation coverage, pseudo-label confident test pairs, Qwen2.5-7B spot check | The unseen country (15% of test) | Planned |
-| 6 | GPU: multilingual embeddings for blocking, cross-encoder re-ranker | The remaining hard cases | Only if time allows |
+| **France** | ≈ 0.94 (0.936–0.946) | — | ≈ 0.036 vs India/US |
+| **India + US** | ≈ 0.969 | 0.9758 | ≈ 0.007 |
 
-**Fixed limits:**
-- Pairs that share no key at all, such as a random alias name with an empty address, can't be found.
-- An S1 whose only matches are "common name + no address" can't be matched with confidence.
+The 0.011 gap of v8 splits roughly in half: about 0.005 from France and about 0.006 from India/US not transferring.
+
+A label-shift check (`scripts/label_shift.py`) doesn't explain the India/US part. EM on the test predictions leaves the India/US prior almost unchanged (0.56 → 0.53), and predicted matches per S1 move by less than 0.01.
+
+---
+
+## 6. Roadmap
+
+| Idea | Expected gain | Status |
+|---|---|---|
+| France-only probe submission (section 5) | Diagnosis | Next |
+| Learn translit / address maps per fold (if India/US don't transfer) | Closes part of the gap | Planned |
+| More French-specific cleanup (legal forms like `e.u.r.l.`, `bis`/`ter`, OCR in addresses) | +0.002 to +0.005 on test | Planned |
+| LightGBM seed ensemble | +0.0005 to +0.001 | Final run |
+| Multilingual cross-encoder, its score as a stage-2 feature (teammate; interface `s1_id, rid, score`, out-of-fold on our S1 folds) | +0.003 to +0.006 on test | Teammate |
+| Multilingual embedding blocking | +0.002 to +0.004 | Unlikely in time |
+
+**Known hard limits:**
+- Pairs with no shared key (random alias names, empty addresses).
+- S1s whose only matches are "common name, no address": these can't be matched with confidence.

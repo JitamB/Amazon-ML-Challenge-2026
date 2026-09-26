@@ -53,6 +53,13 @@ def _row_keys(row, key_types):
         keys += ["nn|" + n + "|" + t for n in nums for t in name_toks if len(t) >= 3]
     if "num_phon_tok" in key_types:
         keys += ["nf|" + n + "|" + t for n in nums for t in phon_toks if len(t) >= 2]
+    # Name word + address word (street / locality): catches common names whose own keys are
+    # capped when the address has no usable number ("mountain trust" + "kniffin").
+    words = list(dict.fromkeys(t for t in addr_toks if len(t) >= 4))[:12]
+    if "name_addr" in key_types:
+        keys += ["nx|" + n + "|" + t for n in name_toks[:3] if len(n) >= 3 for t in words]
+    if "phon_addr" in key_types:
+        keys += ["px|" + p + "|" + t for p in phon_toks[:3] if len(p) >= 2 for t in words]
     return keys
 
 

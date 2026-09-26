@@ -1,5 +1,8 @@
 """Why do true matches miss blocking? Run on the remote from the project root:
-    python scripts/diag_blocking.py work/runs/v1_gbdt [n_s1_sample]
+    python scripts/diag_blocking.py work/runs/v1_gbdt [n_s1_sample] [extra,key,types]
+
+With extra key types, the reasons are recomputed as if those keys had been used too
+(an uncapped shared key means the pair is no longer lost to caps or missing keys).
 
 For a sample of train S1 it splits every missed true link into:
   - no_shared_key : the pair shares no key at all, even before frequency caps
@@ -21,7 +24,11 @@ run_dir = sys.argv[1]
 n_sample = int(sys.argv[2]) if len(sys.argv) > 2 else 20000
 cfg = load_config(os.path.join(run_dir, "config.yaml"))
 bc = cfg["blocking"]
-cache = os.path.join(cfg["paths"]["work_dir"], "cache", "dataset")
+if len(sys.argv) > 3:
+    bc["key_types"] = list(bc["key_types"]) + sys.argv[3].split(",")
+    print("key types:", bc["key_types"])
+cache = os.path.join(cfg["paths"]["work_dir"], "cache",
+                     os.path.basename(cfg["paths"]["data_dir"].rstrip("/")) + cfg["data"].get("cache_tag", ""))
 s1 = pd.read_parquet(f"{cache}/train_s1.parquet")
 s23 = pd.read_parquet(f"{cache}/train_s23.parquet")
 gt = pd.read_parquet(f"{cache}/train_gt.parquet")

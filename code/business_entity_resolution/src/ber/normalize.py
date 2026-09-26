@@ -6,6 +6,7 @@ so no rule may depend on the country label.
 """
 import re
 import unicodedata
+from collections import Counter
 
 import pandas as pd
 from indic_transliteration import sanscript
@@ -80,8 +81,12 @@ def _fix_ocr(tok):
     return tok.translate(_OCR)
 
 
+_DOTTED = re.compile(r"\b(?:[a-z]\.){2,}")  # dotted acronyms: "e.u.r.l." -> "eurl", "l.l.c." -> "llc"
+
+
 def name_tokens(latin_name):
-    s = _WEB.sub(" ", latin_name)
+    s = _DOTTED.sub(lambda m: m.group(0).replace(".", "") + " ", latin_name)
+    s = _WEB.sub(" ", s)
     s = re.sub(r"[^a-z0-9]+", " ", s)
     toks = [_fix_ocr(t) for t in s.split()]
     return [t for t in toks if t not in LEGAL]
@@ -117,11 +122,17 @@ ABBR = {
     "r": "rue", "ch": "chemin", "all": "allee", "imp": "impasse", "rte": "route", "fbg": "faubourg",
     "zi": "zone industrielle", "cc": "centre commercial", "ld": "lieu dit",
 }
-ADDR_STOP = {"null", "n", "a", "na", "none", "no", "h", "hno", "house", "number"}
+ADDR_STOP = {"null", "n", "a", "na", "none", "no", "h", "hno", "house", "number", "ndeg"}
+# French S1 addresses end in the region, S2/S3 in the region and/or the department
+# ("... bordeaux nouvelle aquitaine" vs "... bordeaux gironde"). Both carry no information
+# beyond the city, so they are removed (France has no training labels to learn this from).
+_FR_AREA = re.compile(r"\b(hauts de france|nouvelle aquitaine|pays de la loire|loire atlantique|pas de calais"
+                      r"|gironde)\b|\bnord$")
 
 
 def addr_tokens(latin_addr):
-    s = re.sub(r"[^a-z0-9]+", " ", latin_addr)
+    s = re.sub(r"[^a-z0-9]+", " ", latin_addr).strip()
+    s = _FR_AREA.sub(" ", s)
     out = []
     for t in s.split():
         if t in ADDR_STOP:
@@ -141,6 +152,13 @@ def numbers(latin_addr):
 
 
 # ---------------------------------------------------------------- dataframe
+def name_columns(latin_names):
+    """(name, name_compact, phon) columns from lowercase-latin names."""
+    ntoks = [name_tokens(x) for x in latin_names]
+    ph = [[p for p in (phonetic(t) for t in toks) if p and p not in LEGAL_PHON] for toks in ntoks]
+    return [" ".join(t) for t in ntoks], ["".join(t) for t in ntoks], [" ".join(p) for p in ph]
+
+
 def prepare(df, source):
     """Add all normalised columns used by blocking and features."""
     out = pd.DataFrame({"rid": df["entity_id"].values, "country": df["country"].values,
@@ -149,13 +167,9 @@ def prepare(df, source):
     raw_addr = df["business_address"].values
     lat_name = [to_latin(x) for x in raw_name]
     lat_addr = [to_latin(x) for x in raw_addr]
-    ntoks = [name_tokens(x) for x in lat_name]
     atoks = [addr_tokens(x) for x in lat_addr]
     nums = [numbers(x) for x in lat_addr]
-    out["name"] = [" ".join(t) for t in ntoks]
-    out["name_compact"] = ["".join(t) for t in ntoks]
-    ph = [[p for p in (phonetic(t) for t in toks) if p and p not in LEGAL_PHON] for toks in ntoks]
-    out["phon"] = [" ".join(p) for p in ph]
+    out["name"], out["name_compact"], out["phon"] = name_columns(lat_name)
     out["addr"] = [" ".join(t) for t in atoks]
     out["addr_alpha"] = [" ".join(t for t in toks if t.isalpha() and len(t) >= 3) for toks in atoks]
     out["nums"] = [" ".join(n) for n in nums]
@@ -165,3 +179,78 @@ def prepare(df, source):
     out["name_web"] = [bool(re.search(r"\.(com|net|org|in|fr)\b|^[#@]|www\.", x)) for x in lat_name]
     out["addr_empty"] = [len(t) == 0 for t in atoks]
     return out
+
+
+# ---------------------------------------------------------------- learned transliteration
+# Many Indic-script names are word-by-word transliterations of the English name
+# ("balaji bisines praivet limited" <- "Balaji Business Private Limited"). From training
+# pairs with equal word counts we learn transliterated word -> English word, then rewrite
+# Indic-origin names with it (train and test alike; learned from train labels only).
+def _raw_tokens(latin):
+    return re.sub(r"[^a-z0-9]+", " ", latin).split()
+
+
+def learn_translit(s1_names, rec_names, min_count=3, min_purity=0.6):
+    pairs = Counter()
+    for a, b in zip(s1_names, rec_names):
+        ta, tb = _raw_tokens(a), _raw_tokens(b)
+        if len(ta) == len(tb):
+            pairs.update(zip(tb, ta))
+    total, best = Counter(), {}
+    for (src, dst), c in pairs.items():
+        total[src] += c
+        if c > best.get(src, ("", 0))[1]:
+            best[src] = (dst, c)
+    return {src: dst for src, (dst, c) in best.items()
+            if c >= min_count and c / total[src] >= min_purity and src != dst}
+
+
+def apply_translit(frame, mapping):
+    """Rewrite name columns of Indic-origin names in place using the learned mapping."""
+    rows = frame.index[frame["name_indic"].values]
+    if len(rows) == 0 or not mapping:
+        return frame
+    mapped = [" ".join(mapping.get(t, t) for t in _raw_tokens(x)) for x in frame.loc[rows, "name_raw"]]
+    name, compact, phon = name_columns(mapped)
+    frame.loc[rows, "name"], frame.loc[rows, "name_compact"], frame.loc[rows, "phon"] = name, compact, phon
+    frame.loc[rows, "name_raw"] = mapped
+    return frame
+
+
+# ---------------------------------------------------------------- learned address words
+# Record addresses use transliterated or abbreviated forms of S1 words ("pascimavanga",
+# "wb" <- "west bengal", "tg" <- "telangana"). For training pairs where exactly one alphabetic
+# word on each side has no counterpart on the other, the two are paired; frequent, consistent
+# pairs become a record-word -> S1-word map applied to all S2/S3 addresses.
+def learn_addr_map(s1_addrs, rec_addrs, min_count=20, min_purity=0.6):
+    pairs = Counter()
+    for a, b in zip(s1_addrs, rec_addrs):
+        sa = {t for t in a.split() if t.isalpha()}
+        sb = {t for t in b.split() if t.isalpha()}
+        only_a, only_b = sa - sb, sb - sa
+        if len(only_a) == 1 and len(only_b) == 1:
+            pairs[(next(iter(only_b)), next(iter(only_a)))] += 1
+    total, best = Counter(), {}
+    for (src, dst), c in pairs.items():
+        total[src] += c
+        if c > best.get(src, ("", 0))[1]:
+            best[src] = (dst, c)
+    return {src: dst for src, (dst, c) in best.items() if c >= min_count and c / total[src] >= min_purity}
+
+
+def apply_addr_map(frame, mapping, s1):
+    """Rewrite the addr / addr_alpha columns of S2/S3 records in place.
+
+    The map is learned on India/US only. Per country, a rule is used only if it moves a word
+    towards that country's S1 vocabulary (target word more frequent than the source word in
+    its S1 addresses); otherwise French "de -> des" and "saint -> street" would break France.
+    """
+    if not mapping:
+        return frame
+    for country in frame["country"].unique():
+        freq = Counter(t for x in s1["addr"].values[s1["country"].values == country] for t in x.split())
+        m = {a: b for a, b in mapping.items() if freq[b] > freq[a]}
+        rows = frame["country"].values == country
+        for col in ("addr", "addr_alpha"):
+            frame.loc[rows, col] = [" ".join(m.get(t, t) for t in x.split()) for x in frame.loc[rows, col].values]
+    return frame

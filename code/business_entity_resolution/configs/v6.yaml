@@ -1,0 +1,13 @@
+# v6 = v5b + address map made safe for France (a rule only applies where it moves a word
+#      towards that country's S1 vocabulary) + name/phonetic x address-word blocking keys
+#      + 120 loose candidates per S1 before the ranker keeps 12.
+base: v5b.yaml
+run_name: v6_frfix_keys
+
+data:
+  cache_tag: _translit_addr_guard
+
+blocking:
+  key_types: [name_tok, name_compact, name_prefix, phon_tok, phon_compact, addr_bigram,
+              name_pair, phon_pair, num_addr_tok, num_name_tok, num_phon_tok, name_addr, phon_addr]
+  top_n: 120
