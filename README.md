@@ -31,6 +31,7 @@ For every Source 1 business, find the Source 2 / Source 3 records that are the s
 | [doc/problem_statement.md](doc/problem_statement.md) | The official challenge statement: task, metric, rules, submission format |
 | [doc/analysis.md](doc/analysis.md) | Data analysis, measured baselines, the original strategy |
 | [doc/architecture.md](doc/architecture.md) | **Master document:** how the pipeline works, every version's changes and results, open problems |
+| [doc/investigations.md](doc/investigations.md) | Every analysis we ran: error analysis, blocking diagnostics, the France bug and probe, density, label shift, what didn't work |
 | [code/business_entity_resolution/README.md](code/business_entity_resolution/README.md) | Running the pipeline, the config system, which stage to re-run after a change |
 | [dataset/README.md](dataset/README.md) | Where to put the data (not in the repo) |
 
