@@ -1,7 +1,7 @@
 # Pipeline Architecture: Business Entity Resolution
 
 *Master document: current design, every version's changes and results, and open problems.*
-*Last updated: 2026-09-26 (v8 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
+*Last updated: 2026-09-26 (v9 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
 
 ---
 
@@ -38,7 +38,8 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 | v5b `v5b_fullfold` | v5 with full-size folds | 95.47% | 11.9 | 0.9680 | 0.962 / 0.975 | **0.959** (>650) |
 | v6 `v6_frfix_keys` | Address map made safe for France; name × address-word keys; 120 loose candidates | 97.07% | 12.0 | 0.9762 | 0.971 / 0.983 | **0.963** (702) |
 | v7 `v7_fr_flex` | French address cleanup; flexible candidate sets | | | | | stopped, merged into v8 |
-| v8 `v8_density` | v7 trained on 81% of train S1s (test-like density) | 97.15% | **5.75** (test 6.4) | 0.9758 | 0.970 / 0.983 | *pending* |
+| v8 `v8_density` | v7 trained on 81% of train S1s (test-like density) | 97.15% | **5.75** (test 6.4) | 0.9758 | 0.970 / 0.983 | **0.9645** |
+| v9 `v9_acr_3fold` | Dotted legal acronyms collapsed (`e.u.r.l.` → `eurl`); 3 model folds | 97.15% | 5.74 | *running* | | |
 
 *Blocking recall = share of true training links that reach the model (the recall ceiling). Validation = out-of-fold F0.5 re-weighted to the test's India/US mix; France can't be validated.*
 
@@ -84,6 +85,13 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 - Train now uses 81% of S1s (4.68 / 5.75), so the other 19% of S1s' records become unmatched records, as in the test.
 - Result: validation unchanged (0.9758). So the model already rejects such records well, and the hypothesis doesn't explain the leaderboard gap on its own (see section 5).
 - Candidate sets: **5.75 per S1 on train, 6.4 on test**, half of v6.
+- Leaderboard **0.9645** (+0.0015 over v6).
+
+**v9: acronyms and 3 folds.**
+- Dotted legal acronyms ("e.u.r.l.", "s.a.", "l.l.c.") were split into single letters. They are now joined and dropped as legal words; this is common in French names.
+- 3 model folds instead of 2: each model trains on 67% of the data, and test uses the average of 3 models.
+
+**Blending** (`scripts/blend.py`): averaging the final probabilities of several runs on the first run's candidate set, then re-tuning selection. v8 + v6 gives validation 0.9772 (+0.0014 over either alone).
 
 ---
 

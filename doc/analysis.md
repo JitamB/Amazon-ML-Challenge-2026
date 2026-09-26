@@ -1,5 +1,7 @@
 # Amazon ML Challenge 2026: Problem Analysis & Strategy
 
+> This is the initial analysis and plan (2026-09-25). For what was built and measured since, see [architecture.md](architecture.md).
+
 *Analysis date: 2026-09-25. All EDA was done by streaming the TSVs line by line or on samples of about 1.5k–4k S1 entities, with peak RAM under 1 GB. No file was loaded whole.*
 
 ---
