@@ -11,6 +11,7 @@ re-weighted by the prior ratio before the usual best-S1 / caps / expected-F0.5 s
 strength 1.0 applies the full estimated shift, 0.5 half of it (in log-odds). Writes
 work/runs/<run>/label_shift_<strength>/matching_results.tsv.
 """
+import json
 import os
 import sys
 
@@ -22,9 +23,11 @@ from ber import postprocess  # noqa: E402
 from ber.config import load_config  # noqa: E402
 from ber.io import write_id_lists  # noqa: E402
 
-run, strength = sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
-rd = f"work/runs/{run}"
-cfg = load_config(f"{rd}/config.yaml")
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+only = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--only=")]
+run, strength = args[0], float(args[1]) if len(args) > 1 else 1.0
+rd = args[2] if len(args) > 2 else f"work/runs/{run}"
+cfg = load_config(f"work/runs/{run}/config.yaml")
 cache = f"work/cache/dataset{cfg['data'].get('cache_tag', '')}"
 s1_tr = pd.read_parquet(f"{cache}/train_s1.parquet", columns=["country"])
 s1_te = pd.read_parquet(f"{cache}/test_s1.parquet", columns=["rid", "country"])
@@ -32,7 +35,8 @@ s23_te = pd.read_parquet(f"{cache}/test_s23.parquet", columns=["rid"])
 gt = pd.read_parquet(f"{cache}/train_gt.parquet")
 oof = pd.read_parquet(f"{rd}/oof.parquet")
 test = pd.read_parquet(f"{rd}/test_preds.parquet")
-params = pd.read_json(f"{rd}/selection.json", typ="series").to_dict()
+params = (json.load(open(f"{rd}/metrics.json"))["selection"] if os.path.exists(f"{rd}/metrics.json")
+          and "selection" in json.load(open(f"{rd}/metrics.json")) else json.load(open(f"work/runs/{run}/selection.json")))
 
 n_r = int(max(oof["r_idx"].max(), gt["r_idx"].max())) + 1
 y = np.isin(oof["s1_idx"].values * n_r + oof["r_idx"].values, gt["s1_idx"].values * n_r + gt["r_idx"].values)
@@ -49,6 +53,8 @@ def shift(p, pi0, pi):
 test_cty = s1_te["country"].values[test["s1_idx"].values]
 p_new = test["p"].values.astype(np.float64).copy()
 for c in np.unique(test_cty):
+    if only and c not in only:
+        continue
     m = test_cty == c
     pi0 = y[oof_cty == c].mean() if (oof_cty == c).any() else prior_all
     p = np.clip(test["p"].values[m].astype(np.float64), 1e-6, 1 - 1e-6)
@@ -73,7 +79,7 @@ for name, x in (("original", old), ("shifted", chosen)):
     print(name, "matches per S1:", {c: round((cc == c).sum() / (s1_te['country'] == c).sum(), 4)
                                     for c in s1_te["country"].unique()},
           "empty share", round(1 - x["s1_idx"].nunique() / len(s1_te), 4))
-out = f"{rd}/label_shift_{strength}"
+out = f"{rd.rstrip('/')}_shift{strength}{'_' + '_'.join(only) if only else ''}"
 os.makedirs(out, exist_ok=True)
 ids = pd.DataFrame({"s1_id": s1_te["rid"].values[chosen["s1_idx"].values],
                     "rid": s23_te["rid"].values[chosen["r_idx"].values]})

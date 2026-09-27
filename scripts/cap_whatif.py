@@ -3,7 +3,8 @@ at what cost in raw pairs? For each missed link (sample of train S1s) the *most 
 shared key is found (lowest S1 frequency); for cap settings the script reports the share of
 misses whose best key would survive, and the raw pair count sum(df1 * df2) the newly allowed
 keys would add, by key type.
-    python scripts/cap_whatif.py <run_dir> [n_s1_sample]
+    python scripts/cap_whatif.py <run_dir> [n_s1_sample] [extra,key,types]
+With extra key types, a second report covers only the keys whose prefix is in NEW_PREFIX.
 """
 import os
 import sys
@@ -22,6 +23,8 @@ cfg = load_config(os.path.join(run_dir, "config.yaml"))
 pl = Pipeline(cfg)
 bc = cfg["blocking"]
 kt = bc["key_types"]
+extra = sys.argv[3].split(",") if len(sys.argv) > 3 else []
+kt = list(kt) + [t for t in extra if t not in kt]
 s1, s23 = pl.load_prepared("train")
 gt = pd.read_parquet(pl.cache("train_gt.parquet"))
 pairs = pd.read_parquet(os.path.join(run_dir, "train_pairs.parquet"), columns=["s1_idx", "r_idx"])
@@ -66,6 +69,14 @@ sh["df1"] = sh.key.map(df1).astype(int)
 sh["df2"] = sh.key.map(df2).astype(int)
 sh["type"] = sh.key.str.split("|").str[1]
 best = sh.sort_values(["df1", "df2"]).drop_duplicates(["s1_idx", "r_idx"])
+NEW_PREFIX = {"cname_num": "cn", "cname_addr": "cx", "num_del_addr": "nd"}
+new = [NEW_PREFIX[t] for t in extra if t in NEW_PREFIX]
+if new:
+    bn = sh[sh.type.isin(new)].sort_values(["df1", "df2"]).drop_duplicates(["s1_idx", "r_idx"])
+    print(f"NEW key types {new}: misses sharing one: {len(bn) / len(miss):.3f}")
+    for c1, c2 in [(30, 400), (100, 1500)]:
+        ok = (bn.df1 <= c1) & (bn.df2 <= c2)
+        print(f"  under caps {c1}/{c2}: {ok.sum() / len(miss):.3f} of misses; by type {bn[ok].type.value_counts().to_dict()}")
 print("no shared key at all:", round(1 - len(best) / len(miss), 3))
 print("most specific shared key, quantiles of S1 frequency:", best.df1.quantile([.25, .5, .75, .9]).to_dict())
 print("... and of S2/S3 frequency:", best.df2.quantile([.25, .5, .75, .9]).to_dict())

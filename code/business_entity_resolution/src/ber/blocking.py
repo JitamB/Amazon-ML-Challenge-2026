@@ -60,6 +60,18 @@ def _row_keys(row, key_types):
         keys += ["nx|" + n + "|" + t for n in name_toks[:3] if len(n) >= 3 for t in words]
     if "phon_addr" in key_types:
         keys += ["px|" + p + "|" + t for p in phon_toks[:3] if len(p) >= 2 for t in words]
+    # Full compact name + a number / an address word: specific even when ~40 S1s share the
+    # name, since namesakes sit at different addresses.
+    nc = row.name_compact
+    if "cname_num" in key_types and len(nc) >= 4:
+        keys += ["cn|" + nc + "|" + n for n in nums]
+    if "cname_addr" in key_types and len(nc) >= 4:
+        keys += ["cx|" + nc + "|" + t for t in words]
+    # True matches drop or insert a digit (385 -> 85); every number also emits its one-digit
+    # deletions, so the two forms share a key.
+    if "num_del_addr" in key_types:
+        dels = {n[:i] + n[i + 1:] for n in nums if len(n) >= 2 for i in range(len(n))} | set(nums)
+        keys += ["nd|" + v + "|" + t for v in dels if v for t in words[:6]]
     return keys
 
 
