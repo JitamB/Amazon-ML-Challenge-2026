@@ -6,6 +6,7 @@
 3. Features: pair features.
 4. Train: a two-stage LightGBM model.
 5. Predict: best-S1 assignment, then F0.5-optimal match-set selection.
+6. Finish (separate scripts): average the full and the density-robust model (`src/blend.py`), then correct the French predictions for label shift (`src/france_shift.py`). `reproduce.sh` runs everything.
 
 How each stage works, and the history of every version: [doc/architecture.md](../../doc/architecture.md). The data analysis behind the choices: [doc/analysis.md](../../doc/analysis.md).
 
@@ -15,9 +16,13 @@ How each stage works, and the history of every version: [doc/architecture.md](..
 configs/
   base.yaml        v1 settings; every tunable number lives here
   smoke.yaml       tiny regional dataset for bug-hunting (inherits base.yaml)
-  v2.yaml … v9.yaml  one experiment each; each inherits the previous one (see the main README)
+  v2.yaml … v13b.yaml  one experiment each; each inherits an earlier one (see the main README)
+reproduce.sh       data -> output/, the final submission
 src/
   run.py           CLI entry point
+  blend.py         averages finished runs' probabilities, re-tunes selection
+  stage3.py        optional third model on a blend (record-cluster features)
+  france_shift.py  EM label-shift correction for countries absent from train, writes output/
   ber/
     config.py      YAML loading, `base:` inheritance, --set overrides
     io.py          TSV reading, submission writing
@@ -60,7 +65,7 @@ python $C/src/run.py --config $C/configs/v9.yaml --stage train predict \
     --set run_name=v9_leaves127 model.params.num_leaves=127
 ```
 
-## Key settings (v9)
+## Key settings (final: v12 / v12b)
 
 | Setting | Value | Meaning |
 |---|---|---|
@@ -69,9 +74,11 @@ python $C/src/run.py --config $C/configs/v9.yaml --stage train predict \
 | `data.cache_tag` | `_translit_addr_guard_fr_acr` | Separates prepared-data caches. Change it whenever `normalize.py` changes |
 | `blocking.key_types` | 13 key types | See `doc/architecture.md`, section 3.2 |
 | `blocking.max_df_s1` / `max_df_s23` / `top_n` | 30 / 400 / 120 | Key frequency caps; loose candidates per S1 |
+| `blocking.extra_pass` | 8 specific key types, caps 200 / 3000, top 100 | Second blocking pass, joined with the first (scores summed) |
 | `candidates.keep_k` / `min_cscore` / `min_k` | 12 / 0.001 / 1 | At most 12 per S1; drop ranker scores below 0.001; always keep 1 |
 | `model.n_folds` | 3 | Folds by S1 hash, for both model stages |
 | `model.stage2` | true | Train the stacking model |
+| `model.stage2_exclude` (v12b only) | S1-level group features | The density-robust second model; the final is the average of v12 and v12b |
 | `postprocess.mode` | tune | Choose threshold or expected-F0.5 selection on out-of-fold predictions |
 
 ## Running on the SageMaker space (ml.g5.8xlarge: 32 vCPU, 124 GB RAM, A10G 24 GB, 70 GB disk)
@@ -86,8 +93,8 @@ python $C/src/run.py --config $C/configs/v9.yaml --stage train predict \
 Time per full run (v6): prepare 6 min, block 86 min, features 9 min, train 36 min (2 folds), predict 14 min.
 
 ```bash
-nohup python $C/src/run.py --config $C/configs/v9.yaml > work/v9.log 2>&1 &
-tail -f work/v9.log
+nohup python $C/src/run.py --config $C/configs/v12.yaml > work/v12.log 2>&1 &
+tail -f work/v12.log
 ```
 
 ## Outputs

@@ -70,8 +70,9 @@ def _row_keys(row, key_types):
     # True matches drop or insert a digit (385 -> 85); every number also emits its one-digit
     # deletions, so the two forms share a key.
     if "num_del_addr" in key_types:
-        dels = {n[:i] + n[i + 1:] for n in nums if len(n) >= 2 for i in range(len(n))} | set(nums)
-        keys += ["nd|" + v + "|" + t for v in dels if v for t in words[:6]]
+        hn = nums[:1]
+        dels = {n[:i] + n[i + 1:] for n in hn if len(n) >= 2 for i in range(len(n))} | set(hn)
+        keys += ["nd|" + v + "|" + t for v in dels if v for t in words[:4]]
     return keys
 
 
@@ -129,7 +130,14 @@ def generate_candidates(s1, s23, cfg, log=print):
         p = pd.DataFrame({"s1_idx": agg.index.values // n_r, "r_idx": agg.index.values % n_r,
                           "bscore": agg.values.astype(np.float32)})
         p = p.sort_values(["s1_idx", "bscore"], ascending=[True, False])
-        p = p[p.groupby("s1_idx").cumcount() < bc["top_n"]]
+        rank = p.groupby("s1_idx").cumcount().values
+        keep = rank < bc["top_n"]
+        if bc.get("ties_max"):
+            # keep candidates tied with the top_n-th score (e.g. ~190 records sharing only a
+            # common name), up to ties_max per S1, so the ranker - not the cut - chooses
+            nth = p["bscore"].where(rank == bc["top_n"] - 1).groupby(p["s1_idx"].values).transform("max").values
+            keep |= (p["bscore"].values >= np.nan_to_num(nth, nan=np.inf) - 1e-6) & (rank < bc["ties_max"])
+        p = p[keep]
         out.append(p)
         log(f"  s1 {start + len(chunk_ids):,}/{len(s1_ids):,}: raw pairs {len(agg):,} -> kept {len(p):,}")
     if not out:

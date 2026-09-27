@@ -131,7 +131,8 @@ class Pipeline:
             self.log(f"prepare {split}: S1 {len(s1p):,}  S2+S3 {len(s23p):,}")
 
     def block(self):
-        for split in SPLITS:
+        # BER_BLOCK_SPLITS=test resumes a run whose train blocking already finished
+        for split in os.environ.get("BER_BLOCK_SPLITS", ",".join(SPLITS)).split(","):
             s1, s23 = self.load_prepared(split)
             self.log(f"block {split}")
             sub = self.s1_subset(split, s1)

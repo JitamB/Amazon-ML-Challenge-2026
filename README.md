@@ -20,7 +20,13 @@ For every Source 1 business, find the Source 2 / Source 3 records that are the s
 | v5b_fullfold | Candidate ranker (top 12), address map, all train S1s | 95.47% | 11.9 | 0.9680 | 0.959 |
 | v6_frfix_keys | France-safe address map, name × address keys | 97.07% | 12.0 | 0.9762 | 0.963 (702) |
 | v8_density | French cleanup, flexible candidate sets, 81% of train S1s | 97.15% | **5.75** | 0.9758 | **0.9645** |
-| v9_acr_3fold | Dotted acronyms, 3 model folds | 97.15% | 5.74 | *running* | |
+| v9_acr_3fold | Dotted acronyms, 3 model folds | 97.15% | 5.74 | 0.9763 | |
+| blend v9 + v8 + v6 | Probability average | | | 0.9774 | 0.9653 |
+| v11_caps + v11b_s2robust | Second blocking pass; average of full and density-robust stage 2 | 97.98% | 6.10 | 0.9790 | 0.9733 |
+| + France shift | EM label-shift correction on French predictions | | | 0.9790 | 0.9737 |
+| v12_caps2 + v12b_s2robust + France shift | Looser second pass | 98.30% | 6.40 | 0.9799 | **0.9744** |
+| + stage 3 | Record-cluster features (twins, shared numbers) | | | 0.9810 | *pending* |
+| v13_keys_ties | More keys, tie-aware top-N | loose 98.67% | | *running* | |
 
 *Validation = out-of-fold F0.5 over India and the US, re-weighted to the test mix. France (15% of test) has no training data, so it can't be validated. A probe submission put France at about 0.94 on the leaderboard and India/US at about 0.969. Details: [doc/architecture.md](doc/architecture.md), sections 2 and 5.*
 
@@ -31,7 +37,7 @@ For every Source 1 business, find the Source 2 / Source 3 records that are the s
 | [doc/problem_statement.md](doc/problem_statement.md) | The official challenge statement: task, metric, rules, submission format |
 | [doc/analysis.md](doc/analysis.md) | Data analysis, measured baselines, the original strategy |
 | [doc/architecture.md](doc/architecture.md) | **Master document:** how the pipeline works, every version's changes and results, open problems |
-| [doc/investigations.md](doc/investigations.md) | Every analysis we ran: error analysis, blocking diagnostics, the France bug and probe, density, label shift, what didn't work |
+| [doc/investigations.md](doc/investigations.md) | Every analysis we ran: error analysis, blocking diagnostics, the France bug and probe, density, stage-2 inflation, loss decomposition, orphan records, the unseen-country simulation, what didn't work |
 | [code/business_entity_resolution/README.md](code/business_entity_resolution/README.md) | Running the pipeline, the config system, which stage to re-run after a change |
 | [dataset/README.md](dataset/README.md) | Where to put the data (not in the repo) |
 
@@ -58,11 +64,13 @@ C=code/business_entity_resolution
 python $C/src/run.py --config $C/configs/smoke.yaml --stage make_smoke
 python $C/src/run.py --config $C/configs/smoke.yaml
 
-# 2. Full run: needs about 32 vCPU and 128 GB RAM (we use SageMaker ml.g5.8xlarge), about 2.5-3 h
-python $C/src/run.py --config $C/configs/v9.yaml
+# 2. The final submission end to end (full run, robust second model, blend, France correction, validation):
+#    needs about 32 vCPU and 128 GB RAM (we use SageMaker ml.g5.8xlarge)
+bash $C/reproduce.sh
 
-# 3. Blend the final probabilities of several finished runs (first run's candidate set)
-python scripts/blend.py v9_acr_3fold v8_density v6_frfix_keys
+# 3. Or step by step: one full run, then blend finished runs (first run's candidate set)
+python $C/src/run.py --config $C/configs/v12.yaml
+python $C/src/blend.py v12_caps2 v12b_s2robust
 ```
 
 - **Outputs:** `output/matching_results.tsv` is the file to upload; `output/candidate_pairs.tsv` goes in the final zip. A copy of both is kept in each run's folder, `work/runs/<run>/submission/`.
@@ -84,6 +92,10 @@ Each experiment is a small YAML file in `code/business_entity_resolution/configs
 | `v7.yaml` | v6 | French region/department cleanup, flexible candidate sets |
 | `v8.yaml` | v7 | 81% of train S1s, matching the test's records-per-S1 density |
 | `v9.yaml` | v8 | Dotted legal acronyms collapsed; 3 model folds |
+| `v10.yaml` | v9 | Stage 2 without the S1-level group features (`model.stage2_exclude`) |
+| `v11.yaml`, `v11b.yaml` | v9 | Second blocking pass (`blocking.extra_pass`, caps 100 / 1500); b = without S1-level stage-2 features |
+| `v12.yaml`, `v12b.yaml` | v11 | Second pass caps 200 / 3000, top 100 |
+| `v13.yaml`, `v13b.yaml` | v12 | Compact name × number / address word and one-digit-deletion keys; ties kept at the top-N cut |
 
 For one-off changes, use `--set key=value` together with a new `run_name`. A change to `normalize.py` needs a new `data.cache_tag`, so the prepared data is rebuilt instead of reused.
 
@@ -101,7 +113,7 @@ An external model's score can go into the stage-2 model as an extra feature. The
 ```bash
 scripts/remote.sh push                 # sync code, configs, scripts, docs
 scripts/remote.sh push-data            # upload dataset/ once
-scripts/remote.sh run 'nohup python code/business_entity_resolution/src/run.py --config code/business_entity_resolution/configs/v9.yaml > work/v9.log 2>&1 &'
+scripts/remote.sh run 'nohup python code/business_entity_resolution/src/run.py --config code/business_entity_resolution/configs/v12.yaml > work/v12.log 2>&1 &'
 scripts/remote.sh pull                 # fetch metrics, logs and submissions
 ```
 
@@ -114,7 +126,16 @@ scripts/remote.sh pull                 # fetch metrics, logs and submissions
 | `flex_k.py <run>` | Candidate-set size vs blocking recall for fixed and score-based cuts |
 | `compare_runs.py <a> <b>` | Two runs' test predictions compared by country |
 | `blend.py <runs…>` | Averages runs' probabilities, re-tunes selection, writes a submission |
-| `label_shift.py <run>` | Re-selects test matches after an EM label-shift correction |
+| `label_shift.py <run> [strength] [preds_dir] [--only=France] [--strata]` | Re-selects test matches after an EM label-shift correction |
+| `funnel.py <run> <blend_dir>` | True links kept at each step, and what blocking misses |
+| `cap_whatif.py <run_dir> [n] [extra types]` | Share of blocking misses that looser caps or new key types would recover |
+| `loss_decomp.py <run> <blend_dir>` | Loss after blocking in F0.5 points, by cause |
+| `loss_examples.py`, `orphan_signals.py` | Examples of each loss class; signals separating records of no S1 from true matches |
+| `select_exp.py <run> <blend_dir>` | Selection rules compared with 2-way cross-validation |
+| `stage3.py <run> <blend_dir> [robust]` | Stage 3 on a blend (development copy of `src/stage3.py`) |
+| `compare_sel.py <run> <dir_a> <dir_b>` | Matches added / removed by b vs a, on train and on test (transfer check) |
+| `loco_sim.py <run> <train_country> <unseen_country>` | Leave-one-country-out simulation of the France correction |
+| `stage2_check.py`, `stage2_features_shift.py`, `decoy_rates.py` | Stage-2 inflation of decoy-type pairs on test |
 | `density_check.py`, `density_sim.py`, `transfer_check.py` | Train vs test differences: records per S1, candidate strength, map coverage |
 | `france_map_check.py`, `france_look.py` | What the address map does to French records; uncertain French predictions |
 

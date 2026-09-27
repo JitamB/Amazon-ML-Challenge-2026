@@ -1,0 +1,14 @@
+# v13 = v12 + specific name-address keys in the main pass (full compact name x number,
+# full compact name x address word, one-digit-deleted numbers x address word) + tie-aware
+# top-N in both passes: candidates tied with the N-th blocking score are kept (up to 2x N),
+# so an S1 whose name is shared by many records keeps them all and the ranker chooses.
+base: v12.yaml
+run_name: v13_keys_ties
+
+blocking:
+  key_types: [name_tok, name_compact, name_prefix, phon_tok, phon_compact, addr_bigram,
+              name_pair, phon_pair, num_addr_tok, num_name_tok, num_phon_tok, name_addr, phon_addr,
+              cname_num, cname_addr, num_del_addr]
+  ties_max: 240
+  extra_pass:
+    ties_max: 200

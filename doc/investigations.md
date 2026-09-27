@@ -1,6 +1,6 @@
 # Investigations Log
 
-*Every analysis run during the challenge (25–26 Sep 2026): the question, how it was answered, the numbers, and what we did about it. Negative results are included; they saved as much time as the positive ones.*
+*Every analysis run during the challenge (25–27 Sep 2026): the question, how it was answered, the numbers, and what we did about it. Negative results are included; they saved as much time as the positive ones.*
 
 *Related: the design and version history are in [architecture.md](architecture.md); the initial data analysis is in [analysis.md](analysis.md). Scripts are in `scripts/` and run from the repo root on the SageMaker space.*
 
@@ -21,8 +21,13 @@
 11. [French data observations](#11-french-data-observations)
 12. [Blending runs](#12-blending-runs)
 13. [Modelling choices we considered and rejected](#13-modelling-choices-we-considered-and-rejected)
-14. [Engineering incidents](#14-engineering-incidents)
-15. [Lessons](#15-lessons)
+14. [Blocking recall push (v11–v13)](#14-blocking-recall-push-v11v13)
+15. [Stage-2 features that inflate on test](#15-stage-2-features-that-inflate-on-test)
+16. [Where the score is lost after blocking (v12)](#16-where-the-score-is-lost-after-blocking-v12)
+17. [Orphan records and stage 3](#17-orphan-records-and-stage-3)
+18. [Correcting an unseen country: leave-one-country-out simulation](#18-correcting-an-unseen-country-leave-one-country-out-simulation)
+19. [Engineering incidents](#19-engineering-incidents)
+20. [Lessons](#20-lessons)
 
 ---
 
@@ -343,7 +348,178 @@ v6 covers 92% of v8's train pairs and 98% of its test pairs. The runs differ in 
 
 ---
 
-## 14. Engineering incidents
+## 14. Blocking recall push (v11–v13)
+
+**Question:** how close to 100% can blocking recall get, and where do the remaining misses come from?
+
+**Method:** `scripts/funnel.py` follows every train link through the pipeline, and `scripts/cap_whatif.py` measures what looser caps or new key types would recover.
+
+**Funnel, v11 (train, out-of-fold, 6,188,505 links):**
+
+| Step | True links kept | Note |
+|---|---|---|
+| Loose blocking | 98.01% | |
+| After candidate ranker | 97.98% | 6.1 candidates per S1 |
+| Pair model p ≥ 0.5 | 96.14% | Precision 99.00% |
+| After selection | 95.21% | Precision 99.49%, 3.31 matches per S1 |
+| Macro F0.5 | 0.979 | |
+
+**The 2% of links blocking misses:**
+
+| Type | Share | Recoverable? |
+|---|---|---|
+| Good name + **empty address** | 44.9% | Mostly not: a median of 42 S1s share the name |
+| Good name + good address | 17.5% | Yes (92% India): only the caps dropped them |
+| Alias name (name similarity < 50) | 13.8% | Only through the address |
+| Partial name + good / poor address | 19.0% | Partly |
+| Good name + poor address or no number | 4.7% | Partly |
+
+Only 3.3% of misses share no key at all. For the rest, the most specific shared key has a median frequency of 45 S1s (pass-1 cap: 30).
+
+| Version | Change | Loose recall | After ranker |
+|---|---|---|---|
+| v11 | Second pass, caps 100 / 1500, top 60 | 98.01% | 97.98% |
+| v12 | Second pass, caps 200 / 3000, top 100 | 98.34% | 98.30% |
+| v13 | + compact name × number / address word, one-digit-deletion keys, keep ties at the top-N cut | 98.67% | (running) |
+
+**Checked and rejected:** "same name + both addresses empty → same S1". In train such records are spread over the namesake S1s (a median of 42 S1s share the name), so the rule would be wrong most of the time.
+
+---
+
+## 15. Stage-2 features that inflate on test
+
+**Observation:** v11 alone scored 0.9692 on the leaderboard, below v9's blend despite +0.0016 validation.
+
+**Method:** `scripts/stage2_check.py` and `scripts/stage2_features_shift.py` compare how often stage 2 lifts decoy-type pairs (house number shifted 1–20, strong name) above p = 0.5, on train and on test.
+
+| | Train | Test |
+|---|---|---|
+| Decoy-type records per S1, US | 1× | ~1.9× |
+| Decoy-type records per S1, India | 1× | ~1.65× |
+| Decoy-type pairs lifted above 0.5 by stage 2 (vs stage 1) | no change | 2.3× more (6.9% vs 3.0%) |
+
+The S1-level group features (`*_maxother_s1`, `p_rank_s1`, `s1_n_high`, `s1_sum_p`, support features) describe how an S1's candidates compete. They depend on how many decoys an S1 faces, which differs between train and test.
+
+**Fix:** average the full stage-2 model with one trained without those features (`model.stage2_exclude`).
+
+| | Leaderboard |
+|---|---|
+| v11 (full stage 2) | 0.9692 |
+| v11b (without S1-level features) | 0.9721 |
+| **Average** | **0.9733** |
+| Average + France correction | 0.9737 |
+| v12 average + France correction | 0.9744 |
+
+---
+
+## 16. Where the score is lost after blocking (v12)
+
+**Method:** `scripts/loss_decomp.py <run> <blend_dir>` measures the loss in F0.5 points, not links. Per S1, loss = 1 − F. It is split into the part false positives cause and the part missed links cause; missed links are then added back one reason at a time.
+
+v12 average: macro F0.5 0.9806, loss 0.0194.
+
+| Cause | F0.5 lost | Links |
+|---|---|---|
+| True link below the threshold (0.65) | 0.0062 | 102,490 |
+| Blocking miss | 0.0054 | 105,305 |
+| Record given to another S1 by best-S1 | 0.0025 | 50,432 (88% have an empty address) |
+| Per-S1 caps | 0.0002 | 3,115 |
+| False positive: record of no S1 | 0.0033 | 23,727 pairs |
+| False positive: record of an S1 outside the 81% train view | 0.0015 | (a sampling artefact) |
+| False positive: record of another S1 | 0.0005 | |
+
+- **Below-threshold misses:** 30% have an empty address and 29% a house number shifted by 1–20 (true matches that look exactly like decoys).
+- **By S1:** 80% are perfect, 12% miss some links, 2% have a false positive, 0.4% have links but get an empty list, and 0.1% are singletons given a match.
+- **Selection rules** (`scripts/select_exp.py`, 2-way cross-validation over S1s):
+
+  | Rule | Validation |
+  |---|---|
+  | Global threshold 0.65 (current) | 0.97993 |
+  | Expected F0.5 on raw p | 0.97991 |
+  | Expected F0.5 on calibrated p | 0.98002 |
+  | Thresholds per source × empty address × rank | 0.98016 |
+
+  Selection is close to optimal for these probabilities: the loss is in the probabilities themselves.
+
+---
+
+## 17. Orphan records and stage 3
+
+**Question:** 26% of S2/S3 records belong to no S1, and they cause most false positives. What separates them from true matches?
+
+**Method:** `scripts/loss_examples.py` prints examples; `scripts/orphan_signals.py` measures candidate signals on selected pairs.
+
+**Examples:**
+- `pentagon warehousing | 29 firdous nest 1st floor ...`: a true record with a bare number added in front.
+- `emelyne brown mustang | 327 ackiss avenue` for an S1 at 106 ackiss avenue.
+- `marketing sunshine construction | 0026 c o ashok ...`
+
+| Signal (on selected pairs) | True positives | Orphan false positives |
+|---|---|---|
+| Record address starts with a bare number the S1 doesn't have | 9.0% | 43.1% |
+| S1 house number missing from the record's numbers | 7.6% | 41.4% |
+| **Exact twin (same name + address) among the S1's candidates** | **21.3%** | **1.4%** |
+| Exact twin in the same source | 17.7% | 1.0% |
+
+An entity's true records often repeat each other exactly, while an orphan is a one-off perturbed copy.
+
+**Stage 3** (`src/stage3.py`): LightGBM on the blend's logit plus, per pair:
+- twin counts;
+- shared number sets and addresses among the S1's other candidates, with their summed p;
+- global duplicate count;
+- the number relations above.
+
+It uses 3 folds by S1.
+
+| | Validation (test mix) |
+|---|---|
+| v12 average | 0.97993 |
+| + stage 3 | **0.98104** |
+| + stage 3 without the features that count other records | 0.98007 |
+
+**Transfer check** (`scripts/compare_sel.py`, pairs changed per 1,000 S1s):
+
+| | Train | Test |
+|---|---|---|
+| Added, US | 16.2 | 50.7 |
+| Added, India | 20.3 | 33.2 |
+| Removed, US | 19.5 | 20.8 |
+| Removed, India | 24.7 | 32.7 |
+
+In train, 85% of the added pairs are true. On test, the US additions are 3× the train rate: the same warning sign as section 15.
+
+**Leaderboard:** pending.
+
+---
+
+## 18. Correcting an unseen country: leave-one-country-out simulation
+
+**Question:** can the France correction (EM label shift, section 10) be made more accurate, and how strong should it be?
+
+**Method:** `scripts/loco_sim.py <run> <train_country> <unseen_country>` makes one labelled country play France:
+1. Train a stage-1 model on the other country only.
+2. Predict the unseen country and tune the threshold on the training country.
+3. Score each correction against the unseen country's labels.
+
+| Correction | US → India (unseen prior lower) | India → US (unseen prior higher) |
+|---|---|---|
+| None | 0.94047 | 0.96383 |
+| EM prior (estimate / truth) | 0.5167 / 0.5069 (train 0.5498) | 0.5538 / 0.5496 (train 0.5074) |
+| EM global, strength 1 (current) | +0.0007 | −0.0002 |
+| EM global, strength 2 | +0.0013 | −0.0008 |
+| EM per stratum (source × empty), strength 1 | +0.0011 | −0.0004 |
+| Threshold +0.1 | +0.0019 | −0.0007 |
+| Self-training on pseudo-labels | −0.0016 (alone), +0.0005 (averaged) | |
+
+**Findings:**
+- EM estimates the direction and size of the prior shift well in both directions.
+- Correcting helps only when the unseen country's prior is lower: F0.5 rewards removing doubtful matches, not adding them. The packaged `france_shift.py` therefore applies the correction only in that case. France qualifies: its estimated prior is 0.42 against 0.53 in train.
+- Stronger or per-stratum versions gain another 0.0004–0.0012 on the unseen country. That is about +0.0001 on the leaderboard (France is 15% of S1s) and relies on extrapolating to a shift three times larger than the simulated one. Not adopted.
+- The unseen-country penalty itself is large: India drops from about 0.978 to 0.940 when no Indian labels are used. That is the real France problem, and no correction without labels closed it.
+
+---
+
+## 19. Engineering incidents
 
 | Incident | Cause | Fix |
 |---|---|---|
@@ -359,10 +535,12 @@ v6 covers 92% of v8's train pairs and 98% of its test pairs. The runs differ in 
 | Orphaned worker held 18 GB | Child of a killed run | Verified it was orphaned, then killed it |
 | macOS rsync rejected `--info=progress2` | Old rsync on macOS | `--stats` |
 | Remote disk filling up | ~5 GB per run of features, ~3 GB per data cache | Delete superseded runs' feature folders and caches |
+| v13 and v12 together reached 102 of 124 GB | Two blocking stages at once | v13 queued behind v12 (`scripts/after_v12.sh`) |
+| v13 killed in test blocking (`BrokenProcessPool`) | Analysis jobs (stage 3, simulations) running beside blocking | Resumed at test blocking with `BER_BLOCK_SPLITS=test`; nothing else runs beside blocking |
 
 ---
 
-## 15. Lessons
+## 20. Lessons
 
 1. **Measure the ceiling before optimising.** The v5b error analysis showed that even a perfect model couldn't reach the leaderboard leaders, which pointed straight at blocking.
 2. **A what-if diagnostic beats a 3-hour run.** `diag_blocking.py` with extra key types predicted the v6 gain before any training.
@@ -371,3 +549,5 @@ v6 covers 92% of v8's train pairs and 98% of its test pairs. The runs differ in 
 5. **Simulations must rebuild every derived feature.** Dropping rows after the features were computed gave a falsely reassuring answer (section 8).
 6. **Confirm structural facts** (one S1 per record, no cross-country matches) **and exploit them exactly.** Best-S1 assignment is free precision.
 7. **Watch how validation gains transfer.** From v5b onwards about 60–70% reached the leaderboard, so size expectations accordingly.
+8. **Features that summarise an S1's competition depend on the decoy density.** When train and test densities differ, compare what a feature changes on train and on test before trusting it (sections 15 and 17).
+9. **Count the loss in metric points, not links.** 2.8% of links lost after blocking is 0.014 of F0.5, spread over causes of very different sizes (section 16).

@@ -1,7 +1,7 @@
 # Pipeline Architecture: Business Entity Resolution
 
 *Master document: current design, every version's changes and results, and open problems.*
-*Last updated: 2026-09-26 (v9 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
+*Last updated: 2026-09-27 (v13 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
 
 ---
 
@@ -14,10 +14,11 @@ For every Source 1 (S1) business, return the Source 2 / Source 3 records that ar
 - **Test mix:** India 46.8%, US 38.3%, **France 15.0% (no French training data at all)**.
 
 ```
- TSV sources ─► 1 PREPARE ─► 2 BLOCK ─────────────────► 3 FEATURES ─► 4 TRAIN ──────────────► 5 PREDICT ─► matching_results.tsv
- S1, S2, S3     clean text    inverted-index keys        ~55 numbers   stage 1 LightGBM        best-S1      candidate_pairs.tsv
-                translit.     → ~115 loose cands / S1    per pair      stage 2 LightGBM        caps
-                learned maps  → ranker keeps ~6 / S1                   (competition features)  E[F0.5] sets
+ TSV sources ─► 1 PREPARE ─► 2 BLOCK ─────────────────► 3 FEATURES ─► 4 TRAIN ──────────────► 5 PREDICT ─► 6 BLEND ─────────► matching_results.tsv
+ S1, S2, S3     clean text    inverted-index keys,       ~55 numbers   stage 1 LightGBM        best-S1      full + robust    candidate_pairs.tsv
+                translit.     two passes                 per pair      stage 2 LightGBM        caps         stage 2 averaged
+                learned maps  → ~160 loose cands / S1                  (competition features)  selection    France shift
+                              → ranker keeps ~6.4 / S1
 ```
 
 Each stage reads the previous stage's files from disk, so any stage can be re-run alone (`--stage block|features|train|predict`).
@@ -39,7 +40,18 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 | v6 `v6_frfix_keys` | Address map made safe for France; name × address-word keys; 120 loose candidates | 97.07% | 12.0 | 0.9762 | 0.971 / 0.983 | **0.963** (702) |
 | v7 `v7_fr_flex` | French address cleanup; flexible candidate sets | | | | | stopped, merged into v8 |
 | v8 `v8_density` | v7 trained on 81% of train S1s (test-like density) | 97.15% | **5.75** (test 6.4) | 0.9758 | 0.970 / 0.983 | **0.9645** |
-| v9 `v9_acr_3fold` | Dotted legal acronyms collapsed (`e.u.r.l.` → `eurl`); 3 model folds | 97.15% | 5.74 | *running* | | |
+| v9 `v9_acr_3fold` | Dotted legal acronyms collapsed (`e.u.r.l.` → `eurl`); 3 model folds | 97.15% | 5.74 | 0.9763 | 0.971 / 0.983 | |
+| v9 + v8 + v6 | Blend | | | 0.9774 | 0.972 / 0.984 | **0.9653** |
+| v10 `v10_s2robust` | v9 without the S1-level stage-2 features | 97.15% | 5.74 | 0.9722 | 0.966 / 0.980 | |
+| v11 `v11_caps` | Second blocking pass: specific keys under caps 100 / 1500 | 97.98% | 6.10 | 0.9803 | 0.978 / 0.983 | **0.9692** |
+| v11b `v11b_s2robust` | v11 without the S1-level stage-2 features | 97.98% | 6.10 | 0.9763 | 0.973 / 0.980 | **0.9721** |
+| v11 + v11b | Average | | | 0.9790 | 0.977 / 0.982 | **0.9733** |
+| v11 + v11b + France shift | EM label-shift on French predictions | | | 0.9790 | | **0.9737** |
+| v12 `v12_caps2` | Second pass caps 200 / 3000, top 100 | 98.30% | 6.40 | 0.9811 | 0.979 / 0.984 | |
+| v12b `v12b_s2robust` | v12 without the S1-level stage-2 features | 98.30% | 6.40 | 0.9773 | 0.975 / 0.980 | |
+| v12 + v12b + France shift | Average, France correction | | | 0.9799 | 0.978 / 0.982 | **0.9744** |
+| + stage 3 | Record-cluster features on top of the blend (twins, shared numbers) | | | 0.9810 | 0.979 / 0.983 | *pending* |
+| v13 `v13_keys_ties` | + compact name × number / address word, one-digit-deletion keys, ties kept at the top-N cut | loose 98.67% | | *running* | | |
 
 *Blocking recall = share of true training links that reach the model (the recall ceiling). Validation = out-of-fold F0.5 re-weighted to the test's India/US mix; France can't be validated.*
 
@@ -92,6 +104,33 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 - 3 model folds instead of 2: each model trains on 67% of the data, and test uses the average of 3 models.
 
 **Blending** (`scripts/blend.py`): averaging the final probabilities of several runs on the first run's candidate set, then re-tuning selection. v8 + v6 gives validation 0.9772 (+0.0014 over either alone).
+
+**v10: density-robust stage 2.**
+- The test has ~1.9× (US) and ~1.65× (India) more decoy-type records per S1 than train. Stage 2 lifts 2.3× more decoy-type test pairs above 0.5 than stage 1 does; on train it doesn't.
+- The cause is the S1-level group features (`*_maxother_s1`, `p_rank_s1`, `s1_n_high`, `s1_sum_p`, support features), which depend on how many decoys an S1 faces.
+- v10 drops them (`model.stage2_exclude`). Alone it validates lower. The fix that works is to **average** the full and the robust model: see v11 + v11b.
+
+**v11: second blocking pass.**
+- For most missed links, the most specific shared key was shared by 30–100 S1s, just above the pass-1 cap of 30.
+- A second pass runs only the specific key types (compact name, prefix, word pairs, phonetic compact, number × word, bigrams, name × address) under caps of 100 / 1500 and keeps the top 60. The two passes are joined with summed scores.
+- Recall 97.15% → 97.98% (India 95.7% → 97.3%).
+- On the leaderboard: v11 alone 0.9692, v11b (robust) 0.9721, **average 0.9733**. The France label-shift correction on top gave 0.9737.
+
+**v12: looser second pass.** Caps 200 / 3000, top 100. Recall 98.30%. Average + France correction: leaderboard **0.9744**.
+
+**Stage 3** (`src/stage3.py`, on top of a blend):
+- 26% of S2/S3 records belong to no S1 and cause most false positives. They are one-off perturbed copies, while an entity's true records often repeat each other exactly (21% of true positives have an exact twin among the S1's candidates, 1.4% of orphan false positives).
+- A LightGBM on the blend's logit plus twin counts, shared number sets / addresses with their summed p, global duplicate count and number relations: validation +0.0011.
+- Its US test additions are 3× the train rate, a possible density effect; the leaderboard decides.
+
+**v13: more keys, tied candidates.**
+- Compact name × number and × address word keys, and house numbers with one digit deleted (a true "385" appears as "85").
+- Candidates tied with the top-N-th score are kept, up to 240. Before, ~190 records sharing only a common name were cut arbitrarily.
+- Loose recall 98.34% → 98.67%.
+
+**France correction** (`src/france_shift.py`): EM label shift (Saerens et al.) on the French predictions only.
+- A leave-one-country-out simulation, training on US and predicting India, confirmed that it helps when the unseen country's prior is lower than train's (France: 0.42 vs 0.53).
+- In the opposite case it hurts, so it is skipped then.
 
 ---
 
@@ -244,12 +283,19 @@ A label-shift check (`scripts/label_shift.py`) doesn't explain the India/US part
 
 | Idea | Expected gain | Status |
 |---|---|---|
-| France-only probe submission (section 5) | Diagnosis | Next |
-| Learn translit / address maps per fold (if India/US don't transfer) | Closes part of the gap | Planned |
-| More French-specific cleanup (legal forms like `e.u.r.l.`, `bis`/`ter`, OCR in addresses) | +0.002 to +0.005 on test | Planned |
-| LightGBM seed ensemble | +0.0005 to +0.001 | Final run |
-| Multilingual cross-encoder, its score as a stage-2 feature (teammate; interface `s1_id, rid, score`, out-of-fold on our S1 folds) | +0.003 to +0.006 on test | Teammate |
-| Multilingual embedding blocking | +0.002 to +0.004 | Unlikely in time |
+| France-only probe submission | Diagnosis | Done (France ≈ 0.94 at v8) |
+| More French-specific cleanup (legal forms like `e.u.r.l.`) | +0.002 to +0.005 on test | Acronyms done (v9) |
+| Second blocking pass, looser caps | +0.004 validation | Done (v11, v12) |
+| Density-robust stage 2 (full + robust average) | +0.004 leaderboard | Done (v11 + v11b) |
+| France label-shift correction | +0.0004 leaderboard | Done |
+| Stage 3 (record-cluster features) | +0.0011 validation | Leaderboard pending |
+| v13 keys and tie-aware top-N | +0.3 points of loose recall | Running |
+| Per-group selection thresholds | +0.0002 validation | Not adopted (small) |
+| Stronger / per-stratum France correction | about +0.0001 leaderboard | Not adopted (see investigations §18) |
+| Self-training on French pseudo-labels | Negative in simulation | Rejected |
+| LightGBM seed ensemble | +0.0005 to +0.001 | Not done |
+| Multilingual cross-encoder as a stage-2 feature (interface `s1_id, rid, score`) | +0.003 to +0.006 on test | Not done |
+| Multilingual embedding blocking | +0.002 to +0.004 | Not done |
 
 **Known hard limits:**
 - Pairs with no shared key (random alias names, empty addresses).
