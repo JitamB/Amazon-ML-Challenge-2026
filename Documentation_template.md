@@ -10,8 +10,8 @@
 
 The approach is a classic blocking-plus-classifier pipeline:
 - multilingual text normalisation (9 Indic scripts, learned word maps);
-- a two-pass inverted-index blocking stage, followed by a learned candidate ranker that keeps about **6.4 candidates per S1**;
-- a **two-stage LightGBM** pair model;
+- a two-pass inverted-index blocking stage, followed by a learned candidate ranker that keeps about **7.4 candidates per S1** on test (7.0 on train);
+- a **two-stage LightGBM** pair model, four variants averaged;
 - F0.5-optimal match-set selection that uses the one-S1-per-record structure of the data;
 - a label-shift correction for France, the one country with no training data.
 
@@ -20,7 +20,7 @@ Three findings made the largest difference:
 2. A France-safe guard on the learned address map.
 3. Averaging a full stage-2 model with one that omits S1-level competition features. These features over-fire on the test set, which has about twice as many decoys per S1 as train.
 
-Public leaderboard: **0.9744**.
+Public leaderboard: **0.97526**.
 
 ---
 
@@ -69,11 +69,17 @@ Noise seen:
 
 2. **Pass 1:** all key types. Keys shared by more than 30 S1s or 400 S2/S3 records are dropped. Pair score = Σ 1 / log2(2 + key frequency) over shared keys; the top 120 per S1 are kept.
 3. **Pass 2:** only the specific key types (full compact name, prefix, word pairs, number + word, address bigrams, name + address word), under looser caps of 200 / 3000 and the top 100 per S1. The most specific key shared by a missed true link had a median frequency of 42–45 S1s, just above the pass-1 cap. Pass 2 lifted recall from 97.15% to 98.30%, and India from 95.7% to 97.8%. The two passes are joined, with scores summed.
-4. **Learned candidate ranker.** A LightGBM on cheap similarity features (name/phonetic/address token-set, compact-name Jaro-Winkler, number overlap, blocking-score context), trained out-of-fold on train. It keeps up to 12 candidates per S1, dropping any with ranker score below 0.001 (always at least 1). The ranker is sharply bimodal (median 0.9975 for true pairs, 0.00014 for others), so this cuts ~160 loose candidates per S1 to 6.4 at a cost of 0.04 points of recall.
+4. **More specific keys and ties (v13):**
+   - the full compact name × each number and × each address word;
+   - the house number with any one digit deleted × address words (true matches drop digits: 385 → 85);
+   - candidates tied with the top-N-th score are kept (up to 240), so that ~190 records sharing only a common name are not cut arbitrarily.
+
+   Loose recall 98.34% → 98.67%.
+5. **Learned candidate ranker.** A LightGBM on cheap similarity features (name/phonetic/address token-set, compact-name Jaro-Winkler, number overlap, blocking-score context), trained out-of-fold on train. It keeps up to 12 candidates per S1, dropping any with ranker score below 0.001 (always at least 1). The ranker is sharply bimodal (median 0.9975 for true pairs, 0.00014 for others), so this cuts ~210 loose candidates per S1 to 7.0 (test 7.4) at a cost of 0.06 points of recall.
 
 - **Blocking keys used:** as above; hashed, country-partitioned, two passes with frequency caps.
-- **Candidate pairs generated:** about **11.9M test pairs, 6.9 per S1** (train 6.4), from ~280M loose pairs (~160 per S1).
-- **How we ensured true matches were not lost:** measured blocking recall on train after every change: 92.9% (first version) → 94.6% → 95.7% → 96.05% → 97.15% → 97.98% → **98.30%** (US 98.7%, India 97.8%). `diag_blocking.py` and `cap_whatif.py` classify every missed link (all shared keys capped / cut by top-N / no shared key) and give a what-if for proposed keys and caps before each run.
+- **Candidate pairs generated:** about **12.8M test pairs, 7.4 per S1** (train 7.0), from ~374M loose pairs (~215 per S1).
+- **How we ensured true matches were not lost:** measured blocking recall on train after every change: 92.9% (first version) → 94.6% → 95.7% → 96.05% → 97.15% → 97.98% → 98.30% → **98.61%** (US 98.8%, India 98.3%). `diag_blocking.py` and `cap_whatif.py` classify every missed link (all shared keys capped / cut by top-N / no shared key) and give a what-if for proposed keys and caps before each run.
 
 ---
 
@@ -100,6 +106,7 @@ Noise seen:
   - competition within the S1;
   - support from the S1's strongest other candidates.
 - **Final model = average of two stage-2 models:** one with all features, and one without the S1-level group features. On the test those features raise decoy-type pairs above p = 0.5 2.3× more often than stage 1 alone (6.9% vs 3.0%), while on train they don't. For v11 the average scored 0.9733 on the leaderboard, against 0.9692 (full) and 0.9721 (robust) on their own.
+- **Final ensemble:** this pair is built for two blocking versions (v12 and v13) and all four models are averaged on v13's candidate set (+0.0005 validation over v13's pair alone, +0.0009 over v12's).
 
 **Threshold selection method:**
 1. **Best-S1 assignment:** each record keeps only its highest-scoring S1.
@@ -111,7 +118,7 @@ Noise seen:
 
 ## 5. Results & Error Analysis
 
-- **F_0.5 Score (macro):** out-of-fold validation **0.9799** (test country mix; India 0.9780, US 0.9823). Public leaderboard **0.9744**.
+- **F_0.5 Score (macro):** out-of-fold validation **0.9808** (test country mix; India 0.9792, US 0.9829). Public leaderboard **0.97526**.
 - **Common false positives (wrong merges):**
   1. Sibling decoys with a small house-number shift that also carry name noise (`nova global (india) group pvt ltd`, plot 366 vs 365).
   2. Empty-address records given to the wrong one of several same-name S1s (39% of false positives belong to another S1).
@@ -132,13 +139,18 @@ Loss after blocking (v12 blend, validation 0.9806; total loss 0.0194 in F0.5 poi
 | False positives from the 81% train S1 sample (absent on test) | 0.0015 |
 | Other false positives, per-S1 caps | 0.0007 |
 
+**Tried and not used: stage 3.**
+- The idea: 26% of S2/S3 records belong to no S1, and they cause most false positives. They are one-off perturbed copies, while an entity's true records often repeat each other exactly. 21% of true positives have an identical twin among their S1's candidates, against 1.4% of orphan false positives.
+- The model: a third LightGBM on the blend's logit plus twin and shared-number-set counts.
+- The result: validation +0.0011 (0.9819), but the leaderboard dropped (0.97347 vs 0.97526). On test it added 3× more US matches than on train. These counts depend on how many decoys an S1 faces, the same density shift that affected the S1-level stage-2 features.
+
 Validation vs leaderboard: the gap was 0.004–0.013 over versions. A probe submission, with the French lists emptied, split it into France (≈ 0.94 at the time) and India/US transfer. The decoy-density analysis explained and halved the rest.
 
 ---
 
 ## 6. Conclusion
 
-A carefully diagnosed classic pipeline reaches 0.980 validation F0.5 (0.9744 on the leaderboard) with a candidate set of about 6.4 per S1.
+A carefully diagnosed classic pipeline reaches 0.981 validation F0.5 (0.9753 on the leaderboard) with a candidate set of about 7 per S1.
 - **Biggest gains:** measuring where true links were lost (blocking caps), and checking every learned rule against the unlabelled country and the test's structure.
 - **Largest remaining gap:** choosing among same-name S1s for records with no address; a stronger learned pair model (such as a fine-tuned multilingual cross-encoder) is the natural next step.
 
@@ -153,18 +165,19 @@ A carefully diagnosed classic pipeline reaches 0.980 validation F0.5 (0.9744 on 
 | Path | Role |
 |---|---|
 | `src/run.py` | Entry point: `--config`, `--stage prepare block features train predict` |
-| `src/blend.py` | Averages two runs' probabilities, re-tunes selection |
+| `src/blend.py` | Averages runs' probabilities (on the first run's candidates), re-tunes selection |
+| `src/stage3.py` | Optional third model (off in the final; see section 5) |
 | `src/france_shift.py` | EM label-shift correction for countries absent from train (France); writes `output/` |
 | `src/ber/normalize.py` | Text normalisation, transliteration, learned word maps |
 | `src/ber/blocking.py` | Inverted-index blocking (both passes) |
 | `src/ber/candidates.py` | Learned candidate ranker (the pruned set = `candidate_pairs.tsv`) |
 | `src/ber/features.py`, `src/ber/stage2.py` | Pair features; stage-2 competition features |
 | `src/ber/model.py`, `src/ber/postprocess.py`, `src/ber/metrics.py` | LightGBM with S1-grouped folds; best-S1, caps, expected-F0.5 selection; exact metric |
-| `configs/*.yaml` | One file per experiment, each inheriting from the previous one; final: `v12.yaml` + `v12b.yaml` |
+| `configs/*.yaml` | One file per experiment, each inheriting from an earlier one; final: `v12`, `v12b`, `v13`, `v13b` |
 | `reproduce.sh` | Full reproduction, data → `output/` |
 | `requirements.txt` | Pinned dependencies (Python ≥ 3.11) |
 
-**Reproduce:** put the data in `dataset/{train,test}/`, then from the project root run `bash code/business_entity_resolution/reproduce.sh`. It needs about 32 vCPU and 128 GB RAM, CPU only, about 6 h.
+**Reproduce:** put the data in `dataset/{train,test}/`, then from the project root run `bash code/business_entity_resolution/reproduce.sh`. It needs about 32 vCPU and 128 GB RAM, CPU only, about 12 h (two full pipelines).
 
 **Licences:** LightGBM (MIT), rapidfuzz (MIT), indic_transliteration (MIT), pandas / numpy / scipy / pyarrow (BSD / Apache 2.0), PyYAML (MIT), Unidecode (GPL-2.0, text library). No pretrained or neural model is used.
 
@@ -180,6 +193,8 @@ A carefully diagnosed classic pipeline reaches 0.980 validation F0.5 (0.9744 on 
 | v9 + v8 + v6 | Blend | 97.15% | 0.9774 | 0.9653 |
 | v11 + v11b | Second blocking pass; density-robust average | 97.98% | 0.9790 | 0.9733 |
 | + France correction | EM label shift on French predictions | 97.98% | 0.9790 | 0.9737 |
-| v12 + v12b + France correction | Looser second pass (200 / 3000) | 98.30% | 0.9799 | **0.9744** |
+| v12 + v12b + France correction | Looser second pass (200 / 3000) | 98.30% | 0.9799 | 0.9744 |
+| **v13 + v13b + v12 + v12b + France correction (final)** | More specific keys, ties at the cut; four-model average | 98.61% | 0.9808 | **0.97526** |
+| final + stage 3 | Record-cluster features (twins, shared numbers) on top | 98.61% | 0.9819 | 0.97347 |
 
 The full investigation log, with every analysis and its numbers, is in the repository (`doc/investigations.md`, `doc/architecture.md`).

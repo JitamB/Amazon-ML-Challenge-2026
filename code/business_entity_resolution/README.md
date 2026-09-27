@@ -6,7 +6,7 @@
 3. Features: pair features.
 4. Train: a two-stage LightGBM model.
 5. Predict: best-S1 assignment, then F0.5-optimal match-set selection.
-6. Finish (separate scripts): average the full and the density-robust model (`src/blend.py`), then correct the French predictions for label shift (`src/france_shift.py`). `reproduce.sh` runs everything.
+6. Finish (separate scripts): average the full and density-robust models of v12 and v13 (`src/blend.py`), then correct the French predictions for label shift (`src/france_shift.py`). `reproduce.sh` runs everything.
 
 How each stage works, and the history of every version: [doc/architecture.md](../../doc/architecture.md). The data analysis behind the choices: [doc/analysis.md](../../doc/analysis.md).
 
@@ -21,7 +21,7 @@ reproduce.sh       data -> output/, the final submission
 src/
   run.py           CLI entry point
   blend.py         averages finished runs' probabilities, re-tunes selection
-  stage3.py        optional third model on a blend (record-cluster features)
+  stage3.py        optional third model on a blend (record-cluster features); off in the final
   france_shift.py  EM label-shift correction for countries absent from train, writes output/
   ber/
     config.py      YAML loading, `base:` inheritance, --set overrides
@@ -65,7 +65,7 @@ python $C/src/run.py --config $C/configs/v9.yaml --stage train predict \
     --set run_name=v9_leaves127 model.params.num_leaves=127
 ```
 
-## Key settings (final: v12 / v12b)
+## Key settings (final: v12, v12b, v13, v13b averaged)
 
 | Setting | Value | Meaning |
 |---|---|---|
@@ -78,7 +78,8 @@ python $C/src/run.py --config $C/configs/v9.yaml --stage train predict \
 | `candidates.keep_k` / `min_cscore` / `min_k` | 12 / 0.001 / 1 | At most 12 per S1; drop ranker scores below 0.001; always keep 1 |
 | `model.n_folds` | 3 | Folds by S1 hash, for both model stages |
 | `model.stage2` | true | Train the stacking model |
-| `model.stage2_exclude` (v12b only) | S1-level group features | The density-robust second model; the final is the average of v12 and v12b |
+| `model.stage2_exclude` (v12b, v13b) | S1-level group features | The density-robust second models |
+| v13 `blocking.key_types` + `ties_max` | + `cname_num`, `cname_addr`, `num_del_addr`; ties kept up to 240 (pass 2: 200) | v13's candidate set (7.0 per S1 train, 7.4 test) is the submitted one |
 | `postprocess.mode` | tune | Choose threshold or expected-F0.5 selection on out-of-fold predictions |
 
 ## Running on the SageMaker space (ml.g5.8xlarge: 32 vCPU, 124 GB RAM, A10G 24 GB, 70 GB disk)

@@ -24,9 +24,9 @@ For every Source 1 business, find the Source 2 / Source 3 records that are the s
 | blend v9 + v8 + v6 | Probability average | | | 0.9774 | 0.9653 |
 | v11_caps + v11b_s2robust | Second blocking pass; average of full and density-robust stage 2 | 97.98% | 6.10 | 0.9790 | 0.9733 |
 | + France shift | EM label-shift correction on French predictions | | | 0.9790 | 0.9737 |
-| v12_caps2 + v12b_s2robust + France shift | Looser second pass | 98.30% | 6.40 | 0.9799 | **0.9744** |
-| + stage 3 | Record-cluster features (twins, shared numbers) | | | 0.9810 | *pending* |
-| v13_keys_ties | More keys, tie-aware top-N | loose 98.67% | | *running* | |
+| v12_caps2 + v12b_s2robust + France shift | Looser second pass | 98.30% | 6.40 | 0.9799 | 0.9744 |
+| **v13 + v13b + v12 + v12b + France shift (final)** | More keys, tie-aware top-N; four-model average | 98.61% | 7.0 (test 7.4) | **0.9808** | **0.97526** |
+| final + stage 3 | Record-cluster features (twins, shared numbers) | | | 0.9819 | 0.97347 (not used) |
 
 *Validation = out-of-fold F0.5 over India and the US, re-weighted to the test mix. France (15% of test) has no training data, so it can't be validated. A probe submission put France at about 0.94 on the leaderboard and India/US at about 0.969. Details: [doc/architecture.md](doc/architecture.md), sections 2 and 5.*
 

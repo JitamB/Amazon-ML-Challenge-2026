@@ -380,7 +380,7 @@ Only 3.3% of misses share no key at all. For the rest, the most specific shared 
 |---|---|---|---|
 | v11 | Second pass, caps 100 / 1500, top 60 | 98.01% | 97.98% |
 | v12 | Second pass, caps 200 / 3000, top 100 | 98.34% | 98.30% |
-| v13 | + compact name × number / address word, one-digit-deletion keys, keep ties at the top-N cut | 98.67% | (running) |
+| v13 | + compact name × number / address word, one-digit-deletion keys, keep ties at the top-N cut | 98.67% | 98.61% (7.0 per S1; test 7.4) |
 
 **Checked and rejected:** "same name + both addresses empty → same S1". In train such records are spread over the namesake S1s (a median of 42 S1s share the name), so the rule would be wrong most of the time.
 
@@ -409,6 +409,8 @@ The S1-level group features (`*_maxother_s1`, `p_rank_s1`, `s1_n_high`, `s1_sum_
 | **Average** | **0.9733** |
 | Average + France correction | 0.9737 |
 | v12 average + France correction | 0.9744 |
+| v13 + v13b + v12 + v12b average + France correction (final) | **0.97526** |
+| final + stage 3 | 0.97347 |
 
 ---
 
@@ -488,7 +490,7 @@ It uses 3 folds by S1.
 
 In train, 85% of the added pairs are true. On test, the US additions are 3× the train rate: the same warning sign as section 15.
 
-**Leaderboard:** pending.
+**Leaderboard:** on the final four-model average, stage 3 scored **0.97347 against 0.97526** without it, despite +0.0011 validation. The warning sign was right: counting twins and shared numbers among an S1's candidates depends on how many decoys the S1 faces. **Not used.**
 
 ---
 

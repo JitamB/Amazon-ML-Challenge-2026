@@ -1,7 +1,7 @@
 # Pipeline Architecture: Business Entity Resolution
 
 *Master document: current design, every version's changes and results, and open problems.*
-*Last updated: 2026-09-27 (v13 running). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
+*Last updated: 2026-09-27 (final submission). Data analysis and strategy: [analysis.md](analysis.md). How to run: [code/business_entity_resolution/README.md](../code/business_entity_resolution/README.md).*
 
 ---
 
@@ -50,8 +50,11 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 | v12 `v12_caps2` | Second pass caps 200 / 3000, top 100 | 98.30% | 6.40 | 0.9811 | 0.979 / 0.984 | |
 | v12b `v12b_s2robust` | v12 without the S1-level stage-2 features | 98.30% | 6.40 | 0.9773 | 0.975 / 0.980 | |
 | v12 + v12b + France shift | Average, France correction | | | 0.9799 | 0.978 / 0.982 | **0.9744** |
-| + stage 3 | Record-cluster features on top of the blend (twins, shared numbers) | | | 0.9810 | 0.979 / 0.983 | *pending* |
-| v13 `v13_keys_ties` | + compact name × number / address word, one-digit-deletion keys, ties kept at the top-N cut | loose 98.67% | | *running* | | |
+| + stage 3 | Record-cluster features on top of the blend (twins, shared numbers) | | | 0.9810 | 0.979 / 0.983 | |
+| v13 `v13_keys_ties` | + compact name × number / address word, one-digit-deletion keys, ties kept at the top-N cut | 98.61% | 7.00 (test 7.4) | 0.9815 | 0.980 / 0.984 | |
+| v13b `v13b_s2robust` | v13 without the S1-level stage-2 features | 98.61% | 7.00 | 0.9778 | 0.975 / 0.981 | |
+| **v13 + v13b + v12 + v12b + France shift (final)** | Four-model average on v13's candidates | | | **0.9808** | 0.979 / 0.983 | **0.97526** |
+| final + stage 3 | | | | 0.9819 | 0.981 / 0.983 | 0.97347 |
 
 *Blocking recall = share of true training links that reach the model (the recall ceiling). Validation = out-of-fold F0.5 re-weighted to the test's India/US mix; France can't be validated.*
 
@@ -121,12 +124,14 @@ Each stage reads the previous stage's files from disk, so any stage can be re-ru
 **Stage 3** (`src/stage3.py`, on top of a blend):
 - 26% of S2/S3 records belong to no S1 and cause most false positives. They are one-off perturbed copies, while an entity's true records often repeat each other exactly (21% of true positives have an exact twin among the S1's candidates, 1.4% of orphan false positives).
 - A LightGBM on the blend's logit plus twin counts, shared number sets / addresses with their summed p, global duplicate count and number relations: validation +0.0011.
-- Its US test additions are 3× the train rate, a possible density effect; the leaderboard decides.
+- Its US test additions are 3× the train rate, a density effect: on the final blend the leaderboard fell from 0.97526 to 0.97347. Not used.
 
 **v13: more keys, tied candidates.**
 - Compact name × number and × address word keys, and house numbers with one digit deleted (a true "385" appears as "85").
 - Candidates tied with the top-N-th score are kept, up to 240. Before, ~190 records sharing only a common name were cut arbitrarily.
-- Loose recall 98.34% → 98.67%.
+- Loose recall 98.34% → 98.67%; after the ranker 98.61% at 7.0 candidates per S1 (test 7.4).
+
+**Final submission:** v13 + v13b + v12 + v12b averaged on v13's candidates, then the France correction. Validation 0.9808, leaderboard **0.97526**.
 
 **France correction** (`src/france_shift.py`): EM label shift (Saerens et al.) on the French predictions only.
 - A leave-one-country-out simulation, training on US and predicting India, confirmed that it helps when the unseen country's prior is lower than train's (France: 0.42 vs 0.53).
@@ -288,8 +293,9 @@ A label-shift check (`scripts/label_shift.py`) doesn't explain the India/US part
 | Second blocking pass, looser caps | +0.004 validation | Done (v11, v12) |
 | Density-robust stage 2 (full + robust average) | +0.004 leaderboard | Done (v11 + v11b) |
 | France label-shift correction | +0.0004 leaderboard | Done |
-| Stage 3 (record-cluster features) | +0.0011 validation | Leaderboard pending |
-| v13 keys and tie-aware top-N | +0.3 points of loose recall | Running |
+| Stage 3 (record-cluster features) | +0.0011 validation, −0.0018 leaderboard | Rejected |
+| v13 keys and tie-aware top-N; four-model average | +0.0009 validation | Done (final, 0.97526) |
+| Keep vowels in short tokens' phonetic codes | ≤ +0.03 points of blocking recall | Measured, not run (needs a full re-run) |
 | Per-group selection thresholds | +0.0002 validation | Not adopted (small) |
 | Stronger / per-stratum France correction | about +0.0001 leaderboard | Not adopted (see investigations §18) |
 | Self-training on French pseudo-labels | Negative in simulation | Rejected |
