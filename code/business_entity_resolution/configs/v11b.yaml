@@ -1,0 +1,6 @@
+# v11b = v11 without the density-sensitive stage-2 features (as v10 is to v9); averaged with v11.
+base: v11.yaml
+run_name: v11b_s2robust
+
+model:
+  stage2_exclude: ["sup1_*", "sup2_*", "*_maxother_s1", "p_rank_s1", "s1_n_high", "s1_sum_p", "r_n_high"]

@@ -1,0 +1,11 @@
+# v12 = v11 with the looser blocking pass widened: caps 200 / 3000 (86% of v9's missed links
+# share a key under these caps, vs 81% at 100 / 1500) and 100 candidates per S1 from it.
+base: v11.yaml
+run_name: v12_caps2
+
+blocking:
+  s1_chunk: 60000
+  extra_pass:
+    max_df_s1: 200
+    max_df_s23: 3000
+    top_n: 100

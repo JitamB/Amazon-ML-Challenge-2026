@@ -1,0 +1,11 @@
+# v10 = v9 with the stage-2 features that depend on decoy density removed.
+# The test has ~1.9x (US) / ~1.65x (India) more decoy-type records per S1 than train. On test,
+# stage 2 raised US decoy-type pairs above p=0.5 2.3x more than stage 1 predicts (6.9% vs 3.0%),
+# while on train it doesn't (4.7% -> 5.5%). The shifted inputs are the S1-side group features:
+# support against the S1's other candidates, S1-level counts and ranks. Record-side competition
+# (best competing S1 for the same record, head-to-head deltas) is kept.
+base: v9.yaml
+run_name: v10_s2robust
+
+model:
+  stage2_exclude: ["sup1_*", "sup2_*", "*_maxother_s1", "p_rank_s1", "s1_n_high", "s1_sum_p", "r_n_high"]

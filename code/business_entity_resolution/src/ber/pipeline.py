@@ -7,8 +7,10 @@ directory, so any stage can be re-run alone after a change:
   train    -> models/, oof.parquet, selection.json, metrics.json
   predict  -> output/matching_results.tsv, output/candidate_pairs.tsv (+ validator, experiment log)
 """
+import copy
 import csv
 import datetime as dt
+import fnmatch
 import json
 import os
 import shutil
@@ -134,6 +136,16 @@ class Pipeline:
             self.log(f"block {split}")
             sub = self.s1_subset(split, s1)
             pairs = blocking.generate_candidates(s1.iloc[sub], s23, self.cfg, self.log)
+            extra = self.cfg["blocking"].get("extra_pass")
+            if extra:
+                # specific key types (full compact name, word pairs, number + word ...) under looser
+                # caps: the most specific key of most missed links is shared by 30-100 S1s
+                cfg2 = copy.deepcopy(self.cfg)
+                cfg2["blocking"].update(extra)
+                p2 = blocking.generate_candidates(s1.iloc[sub], s23, cfg2, self.log)
+                pairs = (pd.concat([pairs, p2], ignore_index=True)
+                         .groupby(["s1_idx", "r_idx"], as_index=False)["bscore"].sum())
+                self.log(f"  extra pass: {len(p2):,} pairs; union {len(pairs):,}")
             pairs["s1_idx"] = sub[pairs["s1_idx"].values]
             pairs["source"] = s23["source"].values[pairs["r_idx"].values].astype(np.int8)
             gt = pd.read_parquet(self.cache("train_gt.parquet")) if split == "train" else None
@@ -194,6 +206,11 @@ class Pipeline:
         if self.cfg["model"].get("stage2"):
             self._update_metrics({"stage1_" + k: v for k, v in self._oof_report(feats, oof, s1, gt).items()})
             feats = pd.concat([feats, stage2.group_features(feats.assign(p=oof), s23)], axis=1)
+            # group features whose values depend on how many decoys an S1 faces (the test has ~2x more)
+            drop = [c for c in feats.columns if any(fnmatch.fnmatch(c, pat) for pat in self.cfg["model"].get("stage2_exclude", []))]
+            if drop:
+                feats = feats.drop(columns=drop)
+                self.log(f"  stage 2: excluded {len(drop)} features: {drop}")
             self.log("  stage 2: training on first-stage out-of-fold scores + competition features")
             oof, imp = model.train_cv(feats, self.cfg, self.run_file("models_s2"), self.log)
             imp.to_csv(self.run_file("feature_importance_s2.csv"), header=["gain"])

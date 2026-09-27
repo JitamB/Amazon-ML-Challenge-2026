@@ -1,0 +1,7 @@
+# v12b = v12 without the density-sensitive stage-2 features; averaged with v12 (the v11 recipe
+# that scored 0.9733 vs 0.9692 for v11 alone).
+base: v12.yaml
+run_name: v12b_s2robust
+
+model:
+  stage2_exclude: ["sup1_*", "sup2_*", "*_maxother_s1", "p_rank_s1", "s1_n_high", "s1_sum_p", "r_n_high"]

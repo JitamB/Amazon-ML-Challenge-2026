@@ -58,6 +58,8 @@ ids = pd.DataFrame({"s1_id": s1t["rid"].values[chosen["s1_idx"].values],
                     "rid": s23t["rid"].values[chosen["r_idx"].values]})
 write_id_lists(f"{out}/matching_results.tsv", s1t["rid"].tolist(), ids, "matched_entity_ids")
 shutil.copy(f"work/runs/{runs[0]}/submission/candidate_pairs.tsv", out)
+oof.to_parquet(f"{out}/oof.parquet")
+test.to_parquet(f"{out}/test_preds.parquet")
 json.dump({"runs": runs, "selection": params, **res}, open(f"{out}/metrics.json", "w"), indent=1)
 cc = s1t["country"].values[chosen["s1_idx"].values]
 print("test matches per S1:", {c: round((cc == c).sum() / (s1t["country"] == c).sum(), 4)

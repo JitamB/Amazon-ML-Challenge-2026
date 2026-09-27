@@ -1,0 +1,14 @@
+# v11 = v9 + a second blocking pass for specific key types under looser frequency caps.
+# The most specific key shared by a missed true link has median S1 frequency 42 (cap was 30)
+# and S2/S3 frequency 190; caps of 100 / 1500 would give 81% of missed links an allowed key
+# (scripts/cap_whatif.py). Single-word keys stay under the tight caps.
+base: v9.yaml
+run_name: v11_caps
+
+blocking:
+  s1_chunk: 100000
+  extra_pass:
+    key_types: [name_compact, name_prefix, name_pair, phon_compact, num_addr_tok, num_name_tok, addr_bigram, name_addr]
+    max_df_s1: 100
+    max_df_s23: 1500
+    top_n: 60
