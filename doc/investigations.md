@@ -521,6 +521,38 @@ In train, 85% of the added pairs are true. On test, the US additions are 3× the
 
 ---
 
+### Final checks (after the last submission)
+
+**Recheck of the submitted file** (`scripts/recheck.py`):
+
+| Check | Result |
+|---|---|
+| Matched IDs missing from the test S2/S3 files | 0 |
+| Records matched to two S1s | 0 |
+| Cross-country matches | 0 |
+| Matches outside `candidate_pairs.tsv` | 0 |
+
+Per country:
+
+| Country | Matches per S1 | Candidates per S1 | Empty lists |
+|---|---|---|---|
+| France | 3.37 | 9.10 | 5.6% |
+| India | 3.35 | 7.56 | 5.9% |
+| US | 3.37 | 6.51 | 5.8% |
+
+**Label shift on India/US** (`scripts/weights_exp.py`): EM finds no lower test prior (India 0.455 → 0.455, US 0.512 → 0.535), so section 18's rule correctly leaves them uncorrected.
+
+**Full vs robust weight:** a parabola through v11's leaderboard points (full 0.9692, robust 0.9721, 50/50 0.9733) peaks at a full-model weight of about 0.36.
+
+| Full-model weight | Validation |
+|---|---|
+| 0.5 (the final) | 0.98083 |
+| 0.36 | 0.98020 |
+
+The 0.36 version (`submissions/final_w036_robustheavy/`) was kept as an untested alternative.
+
+---
+
 ## 19. Engineering incidents
 
 | Incident | Cause | Fix |
