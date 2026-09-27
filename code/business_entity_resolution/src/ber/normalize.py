@@ -99,16 +99,29 @@ _PH_MAP = str.maketrans({"b": "p", "d": "t", "g": "k", "q": "k", "c": "k", "v": 
                          "z": "s", "j": "s", "x": "s", "f": "p"})
 
 
-def phonetic(tok):
+def phonetic(tok, short_len=0):
+    """short_len > 0 keeps the vowels of tokens shorter than it (data.phonetic_short_len).
+
+    Without it every short word collapses to one or two consonants ("patel", "battle" and
+    "petal" all give "ptl"), so short-word codes are shared by thousands of S1s and get
+    capped; some even equal a legal word's code ("lata" -> "lt" = "ltd") and are dropped.
+    Keeping short words' vowels halves the collisions (27k -> 62k distinct codes) and
+    raises the true links sharing a phonetic word from 90.7% to 91.9%.
+    """
     if not tok:
         return ""
     first = tok[0]
-    body = re.sub(r"[aeiouyh]", "", tok[1:].translate(_PH_MAP))
     head = first.translate(_PH_MAP) if first not in "aeiouyh" else first
+    body = tok[1:].translate(_PH_MAP)
+    body = body.replace("h", "") if len(tok) < short_len else re.sub(r"[aeiouyh]", "", body)
     return re.sub(r"(.)\1+", r"\1", head + body)
 
 
-LEGAL_PHON = {phonetic(t) for t in LEGAL | {"private", "limited", "praivet", "limited"}}
+def legal_phon(short_len=0):
+    return {phonetic(t, short_len) for t in LEGAL | {"private", "limited", "praivet"}}
+
+
+LEGAL_PHON = legal_phon()
 
 
 # ---------------------------------------------------------------- addresses
@@ -130,8 +143,15 @@ _FR_AREA = re.compile(r"\b(hauts de france|nouvelle aquitaine|pays de la loire|l
                       r"|gironde)\b|\bnord$")
 
 
-def addr_tokens(latin_addr):
+# French number forms (data.fr_number_cleanup): "ndeg3" (n°3) -> "3"; "5 bis", "28bis", "7 ter" -> the number.
+_FR_NDEG = re.compile(r"\bndeg(?=\d)")
+_FR_BIS = re.compile(r"\b(\d+) ?(?:bis|ter)\b")
+
+
+def addr_tokens(latin_addr, fr_cleanup=False):
     s = re.sub(r"[^a-z0-9]+", " ", latin_addr).strip()
+    if fr_cleanup:
+        s = _FR_BIS.sub(r"\1", _FR_NDEG.sub("", s))
     s = _FR_AREA.sub(" ", s)
     out = []
     for t in s.split():
@@ -152,24 +172,31 @@ def numbers(latin_addr):
 
 
 # ---------------------------------------------------------------- dataframe
-def name_columns(latin_names):
+def name_columns(latin_names, short_len=0):
     """(name, name_compact, phon) columns from lowercase-latin names."""
     ntoks = [name_tokens(x) for x in latin_names]
-    ph = [[p for p in (phonetic(t) for t in toks) if p and p not in LEGAL_PHON] for toks in ntoks]
+    legal = LEGAL_PHON if short_len == 0 else legal_phon(short_len)
+    ph = [[p for p in (phonetic(t, short_len) for t in toks) if p and p not in legal] for toks in ntoks]
     return [" ".join(t) for t in ntoks], ["".join(t) for t in ntoks], [" ".join(p) for p in ph]
 
 
-def prepare(df, source):
-    """Add all normalised columns used by blocking and features."""
+def prepare(df, source, opts=None):
+    """Add all normalised columns used by blocking and features.
+
+    opts (from the `data` config): phonetic_short_len, fr_number_cleanup. Both default off,
+    so earlier configs rebuild exactly the same data; a config that turns one on needs its
+    own data.cache_tag.
+    """
+    opts = opts or {}
     out = pd.DataFrame({"rid": df["entity_id"].values, "country": df["country"].values,
                         "source": source})
     raw_name = df["business_name"].values
     raw_addr = df["business_address"].values
     lat_name = [to_latin(x) for x in raw_name]
     lat_addr = [to_latin(x) for x in raw_addr]
-    atoks = [addr_tokens(x) for x in lat_addr]
+    atoks = [addr_tokens(x, opts.get("fr_number_cleanup", False)) for x in lat_addr]
     nums = [numbers(x) for x in lat_addr]
-    out["name"], out["name_compact"], out["phon"] = name_columns(lat_name)
+    out["name"], out["name_compact"], out["phon"] = name_columns(lat_name, opts.get("phonetic_short_len", 0))
     out["addr"] = [" ".join(t) for t in atoks]
     out["addr_alpha"] = [" ".join(t for t in toks if t.isalpha() and len(t) >= 3) for toks in atoks]
     out["nums"] = [" ".join(n) for n in nums]
@@ -205,13 +232,13 @@ def learn_translit(s1_names, rec_names, min_count=3, min_purity=0.6):
             if c >= min_count and c / total[src] >= min_purity and src != dst}
 
 
-def apply_translit(frame, mapping):
+def apply_translit(frame, mapping, short_len=0):
     """Rewrite name columns of Indic-origin names in place using the learned mapping."""
     rows = frame.index[frame["name_indic"].values]
     if len(rows) == 0 or not mapping:
         return frame
     mapped = [" ".join(mapping.get(t, t) for t in _raw_tokens(x)) for x in frame.loc[rows, "name_raw"]]
-    name, compact, phon = name_columns(mapped)
+    name, compact, phon = name_columns(mapped, short_len)
     frame.loc[rows, "name"], frame.loc[rows, "name_compact"], frame.loc[rows, "phon"] = name, compact, phon
     frame.loc[rows, "name_raw"] = mapped
     return frame

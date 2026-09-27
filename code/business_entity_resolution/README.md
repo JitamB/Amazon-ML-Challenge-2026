@@ -98,6 +98,23 @@ nohup python $C/src/run.py --config $C/configs/v12.yaml > work/v12.log 2>&1 &
 tail -f work/v12.log
 ```
 
+## v14: improvements written after the deadline (not yet run)
+
+`configs/v14.yaml` switches on everything below; `run_v14.sh` runs it in the right order. It needs a GPU and `requirements-v14.txt` (torch, transformers, faiss-cpu). All options default to off, so v1–v13 behave exactly as before.
+
+| Improvement | Where | Switch | Expected gain (leaderboard) |
+|---|---|---|---|
+| Multilingual cross-encoder score as a pair feature | `src/cross_encoder.py`, `pipeline._external_score`, `stage2.GROUP_SOURCES` | `features.external: [ce]`, `cross_encoder: {...}` | +0.003 to +0.006 |
+| Embedding blocking pass (k nearest in multilingual-e5-small space) | `src/ber/embed.py`, `pipeline.block` | `blocking.embedding_pass` | +0.0002 to +0.0006 |
+| 3 LightGBM seeds per fold | `src/ber/model.py` | `model.seeds` | +0.0002 to +0.0005 |
+| Keep vowels in short words' phonetic codes | `src/ber/normalize.py` | `data.phonetic_short_len: 7` | +0.0001 to +0.0002 |
+| Per-group selection thresholds | `src/ber/postprocess.py` | `postprocess.group_thresholds` | about +0.0001 |
+| French number forms (`ndeg3`, `bis`, `ter`) | `src/ber/normalize.py` | `data.fr_number_cleanup` | 0 to +0.0003 (France only) |
+| Blend weighted toward the robust model | `src/blend.py` | `--weights=0.36,0.64` | 0 to +0.0002 |
+| Stronger / per-stratum France correction | `src/france_shift.py` | `--strength=`, `--strata` (off) | about +0.0001 |
+
+The gains overlap; together about +0.004 to +0.008, i.e. roughly 0.979–0.983 on the leaderboard. The first two and the cross-encoder are untested code (no GPU run yet); the rest was checked on toy inputs.
+
 ## Outputs
 
 | Path | What it holds |

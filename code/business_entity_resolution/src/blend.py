@@ -1,12 +1,16 @@
 """Blend the final probabilities of several runs on the first run's candidate set.
 
-    python code/business_entity_resolution/src/blend.py v12_caps2 v12b_s2robust [more runs]
+    python code/business_entity_resolution/src/blend.py v12_caps2 v12b_s2robust [more runs] [--weights=0.36,0.64]
 
 All runs must use the same prepared-data row order (same data files; cache tags may differ)
 and, for tuning, the same train S1 view. The pair set is the first run's (so its
 candidate_pairs.tsv stays valid); a pair missing from another run keeps the first run's p.
 Selection is re-tuned on the blended out-of-fold predictions, then applied to the blended
 test predictions. Writes work/runs/blend_<runs>/ with metrics and both submission files.
+
+--weights gives each run a weight (default: equal). The leaderboard favoured the density-robust
+models: v11 full 0.9692, robust 0.9721, 50/50 0.9733; a parabola through these peaks near a
+full-model share of 0.36 (e.g. --weights=0.18,0.32,0.18,0.32 for full, robust, full, robust).
 """
 import json
 import os
@@ -22,7 +26,10 @@ from ber.config import load_config  # noqa: E402
 from ber.io import write_id_lists  # noqa: E402
 from ber.pipeline import Pipeline  # noqa: E402
 
-runs = sys.argv[1:]
+runs = [a for a in sys.argv[1:] if not a.startswith("--")]
+w_arg = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--weights=")]
+weights = np.array([float(x) for x in w_arg[0].split(",")]) if w_arg else np.ones(len(runs))
+assert len(weights) == len(runs), "one weight per run"
 cfg = load_config(f"work/runs/{runs[0]}/config.yaml")
 pl = Pipeline(cfg)
 mix = cfg["eval"].get("test_country_mix")
@@ -36,13 +43,13 @@ def blend(name):
         m = base[["s1_idx", "r_idx"]].merge(o, on=["s1_idx", "r_idx"], how="left")["p"].values
         print(f"  {name}: {r} covers {np.isfinite(m).mean():.4f} of the pairs")
         ps.append(np.where(np.isfinite(m), m, ps[0]))
-    return base.assign(p=np.mean(ps, axis=0).astype(np.float32))
+    return base.assign(p=np.average(ps, axis=0, weights=weights).astype(np.float32))
 
 
-s1, _ = pl.load_prepared("train")
+s1, s23 = pl.load_prepared("train")
 gt = pd.read_parquet(pl.cache("train_gt.parquet"))
 oof = blend("oof")
-country, g, (assigned,) = pl.train_eval_view(s1, gt, postprocess.assign(oof, cfg))
+country, g, (assigned,) = pl.train_eval_view(s1, gt, postprocess.assign(postprocess.with_empty(oof, s23), cfg))
 params = postprocess.tune(assigned, g, country, cfg)
 res = metrics.report(postprocess.select(assigned, params), g, country, mix)
 print("blended OOF:", json.dumps({k: round(v, 4) for k, v in res.items()}))
@@ -51,7 +58,7 @@ for r in runs:
 
 s1t, s23t = pl.load_prepared("test")
 test = blend("test_preds")
-chosen = postprocess.select(postprocess.assign(test, cfg), params)
+chosen = postprocess.select(postprocess.assign(postprocess.with_empty(test, s23t), cfg), params)
 out = f"work/runs/blend_{'+'.join(runs)}"
 os.makedirs(out, exist_ok=True)
 ids = pd.DataFrame({"s1_id": s1t["rid"].values[chosen["s1_idx"].values],

@@ -15,8 +15,8 @@ import pandas as pd
 from rapidfuzz import fuzz, process
 
 GROUP_SOURCES = ["p", "n_tset", "a_tset", "num_jac", "num_a_in_b", "aa_jac", "nc_jw", "hn_eq",
-                 "hn_a_in_bnums", "cscore"]
-DELTA_SOURCES = ["p", "a_tset", "n_tset", "num_jac", "num_a_in_b", "hn_eq"]
+                 "hn_a_in_bnums", "cscore", "ext_ce"]
+DELTA_SOURCES = ["p", "a_tset", "n_tset", "num_jac", "num_a_in_b", "hn_eq", "ext_ce"]
 
 
 def _max_other(groups, values):

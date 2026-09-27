@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from . import blocking, candidates, features, metrics, model, postprocess, stage2
+from . import blocking, candidates, embed, features, metrics, model, postprocess, stage2
 from .io import read_ground_truth, read_source, write_id_lists
 from .normalize import apply_addr_map, apply_translit, learn_addr_map, learn_translit, prepare as prepare_frame
 from .smoke import make_smoke
@@ -60,13 +60,18 @@ class Pipeline:
     def load_prepared(self, split):
         return pd.read_parquet(self.cache(f"{split}_s1.parquet")), pd.read_parquet(self.cache(f"{split}_s23.parquet"))
 
+    def _prep_opts(self):
+        d = self.cfg["data"]
+        return {"phonetic_short_len": d.get("phonetic_short_len", 0), "fr_number_cleanup": d.get("fr_number_cleanup", False)}
+
     def _prepare_parallel(self, df, source):
         n_jobs = self.cfg["features"]["n_jobs"]
         if n_jobs <= 1 or len(df) < 100_000:
-            return prepare_frame(df, source)
+            return prepare_frame(df, source, self._prep_opts())
         chunks = np.array_split(np.arange(len(df)), n_jobs * 4)
         with ProcessPoolExecutor(n_jobs) as ex:
-            parts = list(ex.map(prepare_frame, [df.iloc[c] for c in chunks], [source] * len(chunks)))
+            parts = list(ex.map(prepare_frame, [df.iloc[c] for c in chunks], [source] * len(chunks),
+                                [self._prep_opts()] * len(chunks)))
         return pd.concat(parts, ignore_index=True)
 
     # ------------------------------------------------------------ stages
@@ -122,7 +127,7 @@ class Pipeline:
                     self.log(f"  learned address word map: {len(amap):,} words")
             if self.cfg["data"].get("learned_translit"):
                 with open(self.cache("translit.json")) as f:
-                    s23p = apply_translit(s23p, json.load(f))
+                    s23p = apply_translit(s23p, json.load(f), self._prep_opts()["phonetic_short_len"])
             if self.cfg["data"].get("learned_addr_map"):
                 with open(self.cache("addr_map.json")) as f:
                     s23p = apply_addr_map(s23p, json.load(f), s1p)
@@ -147,6 +152,17 @@ class Pipeline:
                 pairs = (pd.concat([pairs, p2], ignore_index=True)
                          .groupby(["s1_idx", "r_idx"], as_index=False)["bscore"].sum())
                 self.log(f"  extra pass: {len(p2):,} pairs; union {len(pairs):,}")
+            emb = self.cfg["blocking"].get("embedding_pass")
+            if emb:
+                # nearest neighbours in a multilingual embedding space: records with no literal overlap
+                ec = {**embed.DEFAULTS, **emb}
+                tag = os.path.basename(ec["model"])
+                e1 = embed.cached_embeddings(s1, self.cache(f"{split}_s1_emb_{tag}.npy"), ec, self.log)[sub]
+                e2 = embed.cached_embeddings(s23, self.cache(f"{split}_s23_emb_{tag}.npy"), ec, self.log)
+                p3 = embed.knn_pairs(s1.iloc[sub].reset_index(drop=True), s23, e1, e2, ec, self.log)
+                pairs = (pd.concat([pairs, p3], ignore_index=True)
+                         .groupby(["s1_idx", "r_idx"], as_index=False)["bscore"].sum())
+                self.log(f"  embedding pass: {len(p3):,} pairs; union {len(pairs):,}")
             pairs["s1_idx"] = sub[pairs["s1_idx"].values]
             pairs["source"] = s23["source"].values[pairs["r_idx"].values].astype(np.int8)
             gt = pd.read_parquet(self.cache("train_gt.parquet")) if split == "train" else None
@@ -174,6 +190,8 @@ class Pipeline:
             pairs = pd.concat([pairs.reset_index(drop=True), features.context_features(pairs).reset_index(drop=True)],
                               axis=1)
             self.log(f"features {split}: {len(pairs):,} pairs")
+            for name in self.cfg["features"].get("external", []):
+                pairs[f"ext_{name}"] = self._external_score(name, split, pairs, s1, s23)
             idf = features.build_idf(s1, s23)
             if split == "train":
                 gt = pd.read_parquet(self.cache("train_gt.parquet"))
@@ -192,6 +210,26 @@ class Pipeline:
                 feats = features.compute_features(pairs.iloc[a:b], s1, s23, idf, self.cfg)
                 feats.to_parquet(os.path.join(out_dir, f"part-{i:04d}.parquet"))
                 self.log(f"  part {i}: {b - a:,} pairs")
+
+    def _external_score(self, name, split, pairs, s1, s23):
+        """A per-pair score from another model (e.g. src/cross_encoder.py), as a feature column.
+
+        File: work/runs/<run>/<name>_<split>.parquet with columns s1_idx, r_idx, score, or
+        s1_id, rid, score (entity ids, for scores produced outside this pipeline). Train
+        scores must be out-of-fold on this pipeline's S1 folds. Missing pairs get NaN.
+        """
+        ext = pd.read_parquet(self.run_file(f"{name}_{split}.parquet"))
+        if "s1_idx" not in ext.columns:
+            pos1 = pd.Series(np.arange(len(s1)), index=s1["rid"].values)
+            pos2 = pd.Series(np.arange(len(s23)), index=s23["rid"].values)
+            ext = ext.assign(s1_idx=pos1.reindex(ext["s1_id"].values).values,
+                             r_idx=pos2.reindex(ext["rid"].values).values).dropna(subset=["s1_idx", "r_idx"])
+        n_r = len(s23)
+        idx = pd.Series(ext["score"].values.astype(np.float32),
+                        index=ext["s1_idx"].values.astype(np.int64) * n_r + ext["r_idx"].values.astype(np.int64))
+        v = idx.reindex(pairs["s1_idx"].values.astype(np.int64) * n_r + pairs["r_idx"].values).values
+        self.log(f"  external score {name}: covers {np.isfinite(v).mean():.4f} of the pairs")
+        return v
 
     def feature_parts(self, split):
         d = self.run_file(f"{split}_features")
@@ -217,7 +255,7 @@ class Pipeline:
             imp.to_csv(self.run_file("feature_importance_s2.csv"), header=["gain"])
         d = feats[["s1_idx", "r_idx", "source"]].assign(p=oof)
         d.to_parquet(self.run_file("oof.parquet"))
-        country, gt, (assigned, d) = self.train_eval_view(s1, gt, postprocess.assign(d, self.cfg), d)
+        country, gt, (assigned, d) = self.train_eval_view(s1, gt, postprocess.assign(postprocess.with_empty(d, s23), self.cfg), d)
         pp = self.cfg["postprocess"]
         params = (postprocess.tune(assigned, gt, country, self.cfg, self.log) if pp["mode"] == "tune"
                   else {k: pp[k] for k in ("mode", "threshold", "single_threshold")})
@@ -263,7 +301,7 @@ class Pipeline:
             self.log("  stage 2 applied to test")
         d = d[["s1_idx", "r_idx", "source", "p"]]
         d.to_parquet(self.run_file("test_preds.parquet"))
-        chosen = postprocess.select(postprocess.assign(d, self.cfg), params)
+        chosen = postprocess.select(postprocess.assign(postprocess.with_empty(d, s23), self.cfg), params)
         ids = lambda frame: pd.DataFrame({"s1_id": s1["rid"].values[frame["s1_idx"].values],
                                           "rid": s23["rid"].values[frame["r_idx"].values]})
         out_dir = self.cfg["paths"]["output_dir"]

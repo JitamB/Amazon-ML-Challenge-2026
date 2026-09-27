@@ -1,0 +1,6 @@
+# Extra packages for v14 only (cross-encoder, embedding blocking); the submitted output needs
+# requirements.txt alone. All MIT / BSD / Apache-2.0.
+-r requirements.txt
+torch>=2.2
+transformers>=4.40
+faiss-cpu>=1.8

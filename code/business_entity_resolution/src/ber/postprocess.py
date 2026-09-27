@@ -6,6 +6,10 @@
 3. set selection per S1, either
    - threshold: keep p >= threshold; output nothing if max p < single_threshold
    - expected_f: choose the top-k (k may be 0) maximising expected F0.5.
+   - group_threshold: a threshold per group of pairs (record source x rank of the pair
+     within its S1 x empty record address, when an `r_empty` column is present); tuned by
+     coordinate descent when postprocess.group_thresholds is true. 2-way cross-validation
+     over S1s put it at +0.0002 over one global threshold.
 """
 import itertools
 
@@ -13,6 +17,11 @@ import numpy as np
 import pandas as pd
 
 from .metrics import f05_from_counts, report, summarize
+
+
+def with_empty(d, s23):
+    """Add the record's empty-address flag, used by group_threshold selection."""
+    return d.assign(r_empty=s23["addr_empty"].values[d["r_idx"].values])
 
 
 def assign(pairs, cfg):
@@ -48,9 +57,21 @@ def select_expected_f(d):
     return d[keep]
 
 
+def pair_groups(d, use_empty):
+    """Group id per pair of an assign() output (sorted by S1, then p descending)."""
+    rank = d.groupby("s1_idx").cumcount().values
+    g = (d["source"].values.astype(int) - 2) * 3 + np.minimum(rank, 2)
+    if use_empty:
+        g = g * 2 + d["r_empty"].values.astype(int)
+    return g
+
+
 def select(d, params):
     if params["mode"] == "expected_f":
         return select_expected_f(d)
+    if params["mode"] == "group_threshold":
+        th = np.asarray(params["thresholds"])
+        return d[d["p"].values >= th[pair_groups(d, params["use_empty"])]]
     return select_threshold(d, params["threshold"], params["single_threshold"])
 
 
@@ -82,4 +103,26 @@ def tune(d, gt, s1_country, cfg, log=print):
                          score(summarize(f, s1_country, mix))))
     best, best_score = max(results, key=lambda x: x[1])
     log(f"  expected_f -> {results[0][1]:.4f}; best selection {best} -> {best_score:.4f}")
+    if cfg["postprocess"].get("group_thresholds"):
+        use_empty = "r_empty" in d.columns
+        grp = pair_groups(d, use_empty)
+        th = np.full(grp.max() + 1, best.get("threshold", 0.65))
+
+        def g_score(th):
+            m = p >= th[grp]
+            f = f05_from_counts(np.bincount(s1[m], minlength=n), np.bincount(s1[m & y], minlength=n), G)
+            return score(summarize(f, s1_country, mix))
+
+        cur = g_score(th)
+        for _ in range(2):
+            for k in range(len(th)):
+                for t in np.round(np.arange(0.3, 0.91, 0.05), 2):
+                    trial = th.copy()
+                    trial[k] = t
+                    sc = g_score(trial)
+                    if sc > cur:
+                        cur, th = sc, trial
+        log(f"  group thresholds {th.tolist()} -> {cur:.4f}")
+        if cur > best_score:
+            best = {"mode": "group_threshold", "thresholds": th.tolist(), "use_empty": use_empty}
     return best

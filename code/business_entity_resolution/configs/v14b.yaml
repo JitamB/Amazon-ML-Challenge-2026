@@ -1,0 +1,6 @@
+# v14b = v14 without the density-sensitive stage-2 features; averaged with v14.
+base: v14.yaml
+run_name: v14b_s2robust
+
+model:
+  stage2_exclude: ["sup1_*", "sup2_*", "*_maxother_s1", "p_rank_s1", "s1_n_high", "s1_sum_p", "r_n_high"]

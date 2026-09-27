@@ -1,0 +1,39 @@
+# v14 = v13 + every improvement implemented after the deadline (written, not yet run):
+#   - phonetic codes keep the vowels of words shorter than 7 letters (fewer collisions);
+#   - French number forms: "ndeg3" -> "3", "5 bis" / "28ter" -> the number;
+#   - an embedding blocking pass (k nearest records in multilingual-e5-small space);
+#   - a fine-tuned multilingual cross-encoder score as a pair feature (src/cross_encoder.py,
+#     run between the block and features stages);
+#   - 3 LightGBM seeds per fold;
+#   - per-group selection thresholds.
+# The first two change the prepared data, hence the new cache tag. Order of stages: run_v14.sh.
+base: v13.yaml
+run_name: v14_all
+
+data:
+  cache_tag: _translit_addr_guard_fr_acr_ph7
+  phonetic_short_len: 7
+  fr_number_cleanup: true
+
+blocking:
+  embedding_pass:
+    model: intfloat/multilingual-e5-small
+    k: 10
+
+features:
+  external: [ce]
+
+cross_encoder:
+  model: intfloat/multilingual-e5-small
+  max_len: 64
+  batch_size: 256
+  lr: 3.0e-5
+  epochs: 1
+  max_train_pairs: 2000000
+  test_folds: 3
+
+model:
+  seeds: [0, 1, 2]
+
+postprocess:
+  group_thresholds: true

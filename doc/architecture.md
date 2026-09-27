@@ -295,13 +295,14 @@ A label-shift check (`scripts/label_shift.py`) doesn't explain the India/US part
 | France label-shift correction | +0.0004 leaderboard | Done |
 | Stage 3 (record-cluster features) | +0.0011 validation, −0.0018 leaderboard | Rejected |
 | v13 keys and tie-aware top-N; four-model average | +0.0009 validation | Done (final, 0.97526) |
-| Keep vowels in short tokens' phonetic codes | ≤ +0.03 points of blocking recall | Measured, not run (needs a full re-run) |
-| Per-group selection thresholds | +0.0002 validation | Not adopted (small) |
+| Keep vowels in short tokens' phonetic codes | ≤ +0.03 points of blocking recall | Written (v14), not run |
+| Per-group selection thresholds | +0.0002 validation | Written (v14), not run |
 | Stronger / per-stratum France correction | about +0.0001 leaderboard | Not adopted (see investigations §18) |
 | Self-training on French pseudo-labels | Negative in simulation | Rejected |
-| LightGBM seed ensemble | +0.0005 to +0.001 | Not done |
-| Multilingual cross-encoder as a stage-2 feature (interface `s1_id, rid, score`) | +0.003 to +0.006 on test | Not done |
-| Multilingual embedding blocking | +0.002 to +0.004 | Not done |
+| LightGBM seed ensemble | +0.0002 to +0.0005 leaderboard | Written (v14), not run |
+| Multilingual cross-encoder as a pair feature (`src/cross_encoder.py`; external scores `s1_id, rid, score` also accepted) | +0.003 to +0.006 leaderboard | Written (v14), not run |
+| Multilingual embedding blocking (`src/ber/embed.py`) | +0.0002 to +0.0006 leaderboard | Written (v14), not run |
+| Per-group thresholds, phonetic fix, French number forms, robust-weighted blend | +0.0002 to +0.0008 together | Written (v14), not run |
 
 **Known hard limits:**
 - Pairs with no shared key (random alias names, empty addresses).

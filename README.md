@@ -96,6 +96,7 @@ Each experiment is a small YAML file in `code/business_entity_resolution/configs
 | `v11.yaml`, `v11b.yaml` | v9 | Second blocking pass (`blocking.extra_pass`, caps 100 / 1500); b = without S1-level stage-2 features |
 | `v12.yaml`, `v12b.yaml` | v11 | Second pass caps 200 / 3000, top 100 |
 | `v13.yaml`, `v13b.yaml` | v12 | Compact name × number / address word and one-digit-deletion keys; ties kept at the top-N cut |
+| `v14.yaml`, `v14b.yaml` | v13 | Not yet run: cross-encoder feature, embedding blocking, 3 seeds, phonetic fix, French number forms, group thresholds (`run_v14.sh`; see the package README) |
 
 For one-off changes, use `--set key=value` together with a new `run_name`. A change to `normalize.py` needs a new `data.cache_tag`, so the prepared data is rebuilt instead of reused.
 
